@@ -151,6 +151,26 @@ function setupEventListeners() {
   }
 }
 
+async function deleteLead(leadUuid) {
+  if (!confirm('Delete this lead? This cannot be undone.')) return;
+  showLoader(true);
+  try {
+    const resp = await fetch(`/api/leads/${leadUuid}`, { method: 'DELETE' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to delete lead');
+    }
+    showMessage('success', 'Lead deleted');
+    // Refresh list
+    await fetchLeads();
+  } catch (e) {
+    console.error('Delete lead error:', e);
+    showMessage('error', e.message || 'Failed to delete lead');
+  } finally {
+    showLoader(false);
+  }
+}
+
 // API Functions
 let activeRefreshTimer = null;
 
