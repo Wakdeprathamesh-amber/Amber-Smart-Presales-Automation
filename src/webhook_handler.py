@@ -103,6 +103,9 @@ class WebhookHandler:
         if message_type == "status-update":
             status = message.get("status")
             ended_reason = message.get("endedReason", "")
+            # Try to infer if the call was ever answered/connected
+            call_info = event_data.get("call", {}) or message.get("call", {})
+            answered_at = (call_info or {}).get("answeredAt") or (call_info or {}).get("connectedAt")
             
             print(f"Call status update: {status}, Reason: {ended_reason}")
             
@@ -126,6 +129,9 @@ class WebhookHandler:
                 failed_keywords = [
                     "failed", "error", "providerfault", "server-error", "503", "500"
                 ]
+                # If the call was never answered/connected, treat as missed regardless of reason text
+                if not answered_at:
+                    return self._handle_missed_call(lead_row, event_data)
                 if any(k in reason for k in missed_keywords):
                     return self._handle_missed_call(lead_row, event_data)
                 if any(k in reason for k in failed_keywords):
