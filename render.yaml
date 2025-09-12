@@ -8,6 +8,8 @@ services:
     envVars:
       - key: PORT
         value: 10000
+      - key: RETRY_UNITS
+        value: minutes
       - key: GOOGLE_SHEETS_CREDENTIALS_FILE
         sync: false
       - key: LEADS_SHEET_ID

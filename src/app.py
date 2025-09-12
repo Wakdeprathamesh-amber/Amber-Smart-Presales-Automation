@@ -32,11 +32,18 @@ sheets_manager = SheetsManager(
     sheet_id=os.getenv('LEADS_SHEET_ID')
 )
 
-# Force default retry intervals to 2, 4, 6 minutes (stored internally as hours)
-default_retry_intervals_hours = [2/60.0, 4/60.0, 6/60.0]
+# Retry config from env
+retry_intervals_env = os.getenv('RETRY_INTERVALS', '1,4,24')
+retry_units_env = os.getenv('RETRY_UNITS', 'hours')
+retry_intervals = []
+try:
+    retry_intervals = [float(x.strip()) for x in retry_intervals_env.split(',') if x.strip()]
+except Exception:
+    retry_intervals = [1, 4, 24]
 retry_manager = RetryManager(
     max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
-    retry_intervals=default_retry_intervals_hours
+    retry_intervals=retry_intervals,
+    interval_unit=retry_units_env
 )
 
 vapi_client = VapiClient(api_key=os.getenv('VAPI_API_KEY'))
@@ -275,18 +282,30 @@ def get_retry_config():
 def update_retry_config():
     """Update the retry configuration."""
     try:
-        # Ignore incoming payload for now; enforce static 2/4/6 minutes and 3 attempts
-        retry_manager.max_retries = 3
-        retry_manager.retry_intervals = [2/60.0, 4/60.0, 6/60.0]
-        os.environ['MAX_RETRY_COUNT'] = '3'
-        os.environ['RETRY_INTERVALS'] = ','.join(map(str, retry_manager.retry_intervals))
-        
+        data = request.get_json(silent=True) or {}
+        max_retries = int(data.get('max_retries', retry_manager.max_retries))
+        intervals = data.get('retry_intervals') or retry_manager.retry_intervals
+        units = (data.get('interval_unit') or retry_manager.interval_unit).lower()
+
+        # Normalize intervals to floats
+        intervals = [float(x) for x in intervals]
+
+        retry_manager.max_retries = max_retries
+        retry_manager.retry_intervals = intervals
+        retry_manager.interval_unit = 'minutes' if units == 'minutes' else 'hours'
+
+        # Reflect in process env (for consistency if other modules read it later)
+        os.environ['MAX_RETRY_COUNT'] = str(max_retries)
+        os.environ['RETRY_INTERVALS'] = ','.join([str(x) for x in intervals])
+        os.environ['RETRY_UNITS'] = retry_manager.interval_unit
+
         return jsonify({
             "success": True,
             "message": "Retry configuration updated successfully",
             "config": {
                 "max_retries": retry_manager.max_retries,
-                "retry_intervals": retry_manager.retry_intervals
+                "retry_intervals": retry_manager.retry_intervals,
+                "interval_unit": retry_manager.interval_unit
             }
         })
     except Exception as e:

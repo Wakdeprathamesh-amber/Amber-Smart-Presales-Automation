@@ -33,10 +33,12 @@ def start_orchestrator():
             sheet_id=os.getenv('LEADS_SHEET_ID')
         )
 
-        retry_intervals = [int(h) for h in os.getenv('RETRY_INTERVALS', '1,4,24').split(',')]
+        retry_intervals = [int(x) for x in os.getenv('RETRY_INTERVALS', '1,4,24').split(',')]
+        retry_units = os.getenv('RETRY_UNITS', 'hours')
         retry_manager = RetryManager(
             max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
-            retry_intervals=retry_intervals
+            retry_intervals=retry_intervals,
+            interval_unit=retry_units
         )
 
         vapi_client = VapiClient(api_key=os.getenv('VAPI_API_KEY'))

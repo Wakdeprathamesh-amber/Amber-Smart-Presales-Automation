@@ -62,13 +62,14 @@ Add these in the Render dashboard:
 
 ```
 PORT=10000
+RETRY_UNITS=minutes
 GOOGLE_SHEETS_CREDENTIALS_FILE=config/amber-sheets-credentials.json
 LEADS_SHEET_ID=your_google_sheet_id_here
 VAPI_API_KEY=your_vapi_api_key_here
 VAPI_ASSISTANT_ID=your_vapi_assistant_id_here
 VAPI_PHONE_NUMBER_ID=your_vapi_phone_number_id_here
 MAX_RETRY_COUNT=3
-RETRY_INTERVALS=1,4,24
+RETRY_INTERVALS=2,4,6
 ORCHESTRATOR_INTERVAL_SECONDS=60
 FLASK_DEBUG=False
 ```
