@@ -16,6 +16,7 @@ from src.webhook_handler import WebhookHandler
 load_dotenv()
 
 # Configure logging
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
