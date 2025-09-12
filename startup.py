@@ -13,6 +13,10 @@ def setup_credentials():
     """Set up Google Sheets credentials from environment variable if needed."""
     credentials_file = os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE', 'config/amber-sheets-credentials.json')
     
+    # Debug logging
+    logging.info(f"Looking for credentials file: {credentials_file}")
+    logging.info(f"File exists: {os.path.exists(credentials_file)}")
+    
     # If credentials file doesn't exist, try to create it from environment variable
     if not os.path.exists(credentials_file):
         # Option 1: JSON env var
@@ -28,11 +32,17 @@ def setup_credentials():
             os.makedirs(os.path.dirname(credentials_file), exist_ok=True)
 
             if credentials_json:
-                creds = json.loads(credentials_json)
-                with open(credentials_file, 'w') as f:
-                    json.dump(creds, f, indent=2)
-                logging.info(f"Created credentials file from GOOGLE_SHEETS_CREDENTIALS_JSON -> {credentials_file}")
-                return
+                try:
+                    # Log the first 100 chars to debug
+                    logging.info(f"Processing credentials JSON (first 100 chars): {credentials_json[:100]}...")
+                    creds = json.loads(credentials_json)
+                    with open(credentials_file, 'w') as f:
+                        json.dump(creds, f, indent=2)
+                    logging.info(f"Created credentials file from GOOGLE_SHEETS_CREDENTIALS_JSON -> {credentials_file}")
+                    return
+                except json.JSONDecodeError as e:
+                    logging.error(f"Invalid JSON in GOOGLE_SHEETS_CREDENTIALS_JSON: {e}")
+                    raise
 
             # Try copying from secret file if exists
             for path in secret_file_candidates:
