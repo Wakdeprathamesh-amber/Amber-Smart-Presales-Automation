@@ -1,0 +1,733 @@
+{
+  "meta": {
+    "exportedAt": "2025-09-11T19:10:00.000Z",
+    "n8n_version": "1.64.0"
+  },
+  "workflows": [
+    {
+      "name": "Amber Smart Presales - Initiate Call & Vapi Webhook",
+      "nodes": [
+        {
+          "parameters": {
+            "httpMethod": "POST",
+            "path": "initiate-call",
+            "responseMode": "lastNode",
+            "options": {
+              "responseData": "{\n  \"status\": \"accepted\"\n}",
+              "responseCode": 200,
+              "responseDataContentType": "application/json"
+            }
+          },
+          "id": "WebhookInitiateCall",
+          "name": "Webhook: Initiate Call",
+          "type": "n8n-nodes-base.webhook",
+          "typeVersion": 1,
+          "position": [
+            -260,
+            -60
+          ]
+        },
+        {
+          "parameters": {
+            "functionCode": "// Expect body: { name, number, email, lead_uuid }\nconst body = items[0].json;\nif (!body.number) {\n  throw new Error('number is required');\n}\nconst number = String(body.number).startsWith('+') ? String(body.number) : `+${body.number}`;\nconst payload = {\n  assistantId: $env.VAPI_ASSISTANT_ID,\n  phoneNumberId: $env.VAPI_PHONE_NUMBER_ID,\n  customer: { number },\n  metadata: {\n    lead_uuid: body.lead_uuid || $json.lead_uuid || '',\n    initiated_at: new Date().toISOString(),\n  },\n};\nreturn [{ json: { payload, lead_uuid: body.lead_uuid, name: body.name, email: body.email } }];"
+          },
+          "id": "FnPrepareVapiPayload",
+          "name": "Fn: Prepare Vapi Payload",
+          "type": "n8n-nodes-base.function",
+          "typeVersion": 1,
+          "position": [
+            -20,
+            -60
+          ]
+        },
+        {
+          "parameters": {
+            "authentication": "predefinedCredentialType",
+            "requestMethod": "POST",
+            "url": "https://api.vapi.ai/call",
+            "jsonParameters": true,
+            "options": {},
+            "allowUnauthorizedCerts": false,
+            "sendQuery": false,
+            "sendBody": true,
+            "bodyParametersJson": "={{$json.payload}}",
+            "headerParametersJson": "={\n  \"Authorization\": \"Bearer {{$env.VAPI_API_KEY}}\",\n  \"Content-Type\": \"application/json\"\n}"
+          },
+          "id": "HTTPVapiCall",
+          "name": "HTTP: Vapi Call",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [
+            220,
+            -60
+          ]
+        },
+        {
+          "parameters": {
+            "operation": "update",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "options": {
+              "valueInputMode": "RAW"
+            },
+            "updateKey": "lead_uuid",
+            "value": "={{$json.lead_uuid}}",
+            "updateAll": false,
+            "dataToSend": {
+              "values": [
+                {
+                  "column": "call_status",
+                  "value": "initiated"
+                },
+                {
+                  "column": "last_call_time",
+                  "value": "={{new Date().toISOString()}}"
+                },
+                {
+                  "column": "vapi_call_id",
+                  "value": "={{$json.id}}"
+                }
+              ]
+            }
+          },
+          "id": "GSheetsMarkInitiated",
+          "name": "Sheets: Mark Initiated",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            460,
+            -60
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        },
+        {
+          "parameters": {
+            "httpMethod": "POST",
+            "path": "vapi",
+            "responseMode": "onReceived",
+            "options": {
+              "responseCode": 200
+            }
+          },
+          "id": "WebhookVapi",
+          "name": "Webhook: Vapi",
+          "type": "n8n-nodes-base.webhook",
+          "typeVersion": 1,
+          "position": [
+            -260,
+            300
+          ]
+        },
+        {
+          "parameters": {
+            "functionCode": "// Normalize Vapi webhook\nconst message = $json.message || {};\nconst topCall = $json.call || {};\nconst callInMessage = message.call || {};\nconst meta = (topCall.metadata || callInMessage.metadata || {});\nconst lead_uuid = meta.lead_uuid || '';\nconst vapi_call_id = (topCall.id || callInMessage.id || '');\nconst type = message.type;\nconst status = message.status;\nconst endedReason = (message.endedReason || '').toLowerCase();\nconst analysis = message.analysis || {};\n\nreturn [{ json: { lead_uuid, vapi_call_id, type, status, endedReason, analysis } }];"
+          },
+          "id": "FnParseVapi",
+          "name": "Fn: Parse Vapi",
+          "type": "n8n-nodes-base.function",
+          "typeVersion": 1,
+          "position": [
+            -20,
+            300
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "string": [
+                {
+                  "value1": "={{$json.type}}",
+                  "operation": "equal",
+                  "value2": "status-update"
+                }
+              ]
+            }
+          },
+          "id": "IFStatusUpdate",
+          "name": "IF: status-update?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 1,
+          "position": [
+            220,
+            300
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "string": [
+                {
+                  "value1": "={{$json.status}}",
+                  "operation": "equal",
+                  "value2": "answered"
+                }
+              ]
+            }
+          },
+          "id": "IFAnswered",
+          "name": "IF: answered?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 1,
+          "position": [
+            460,
+            150
+          ]
+        },
+        {
+          "parameters": {
+            "operation": "update",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "options": {
+              "valueInputMode": "RAW"
+            },
+            "updateKey": "lead_uuid",
+            "value": "={{$json.lead_uuid}}",
+            "updateAll": false,
+            "dataToSend": {
+              "values": [
+                { "column": "call_status", "value": "answered" }
+              ]
+            }
+          },
+          "id": "GSheetsAnswered",
+          "name": "Sheets: Mark Answered",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            700,
+            150
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "string": [
+                {
+                  "value1": "={{$json.status}}",
+                  "operation": "equal",
+                  "value2": "ended"
+                }
+              ]
+            }
+          },
+          "id": "IFEnded",
+          "name": "IF: ended?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 1,
+          "position": [
+            460,
+            450
+          ]
+        },
+        {
+          "parameters": {
+            "functionCode": "const reason = ($json.endedReason || '').toLowerCase();\nconst missedKeywords = ['no-answer','noanswer','rejected','busy','timeout','cancelled','canceled','unavailable','486','487','480'];\nconst failedKeywords = ['failed','error','providerfault','server-error','503','500'];\nconst isProblem = missedKeywords.some(k=>reason.includes(k)) || failedKeywords.some(k=>reason.includes(k));\nreturn [{ json: { ...$json, isProblem } }];"
+          },
+          "id": "FnClassifyEnded",
+          "name": "Fn: Classify ended",
+          "type": "n8n-nodes-base.function",
+          "typeVersion": 1,
+          "position": [
+            700,
+            450
+          ]
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "boolean": [
+                {
+                  "value1": "={{$json.isProblem}}",
+                  "operation": "isTrue"
+                }
+              ]
+            }
+          },
+          "id": "IFProblem",
+          "name": "IF: missed/failed?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 1,
+          "position": [
+            920,
+            450
+          ]
+        },
+        {
+          "parameters": {
+            "operation": "update",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "options": {
+              "valueInputMode": "RAW"
+            },
+            "updateKey": "lead_uuid",
+            "value": "={{$json.lead_uuid}}",
+            "updateAll": false,
+            "dataToSend": {
+              "values": [
+                { "column": "call_status", "value": "missed" },
+                { "column": "retry_count", "value": "={{(Number($json.retry_count)||0)+1}}" },
+                { "column": "next_retry_time", "value": "={{ new Date(Date.now()+2*60*1000).toISOString() }}" }
+              ]
+            }
+          },
+          "id": "GSheetsMissed",
+          "name": "Sheets: Mark Missed & Schedule Retry",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            1140,
+            360
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        },
+        {
+          "parameters": {
+            "operation": "update",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "options": {
+              "valueInputMode": "RAW"
+            },
+            "updateKey": "lead_uuid",
+            "value": "={{$json.lead_uuid}}",
+            "updateAll": false,
+            "dataToSend": {
+              "values": [
+                { "column": "call_status", "value": "completed" }
+              ]
+            }
+          },
+          "id": "GSheetsCompleted",
+          "name": "Sheets: Mark Completed",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            1140,
+            540
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        },
+        {
+          "parameters": {
+            "conditions": {
+              "string": [
+                {
+                  "value1": "={{$json.type}}",
+                  "operation": "equal",
+                  "value2": "end-of-call-report"
+                }
+              ]
+            }
+          },
+          "id": "IFReport",
+          "name": "IF: end-of-call-report?",
+          "type": "n8n-nodes-base.if",
+          "typeVersion": 1,
+          "position": [
+            220,
+            720
+          ]
+        },
+        {
+          "parameters": {
+            "operation": "update",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "options": {
+              "valueInputMode": "RAW"
+            },
+            "updateKey": "lead_uuid",
+            "value": "={{$json.lead_uuid}}",
+            "updateAll": false,
+            "dataToSend": {
+              "values": [
+                { "column": "summary", "value": "={{$json.analysis.summary || ''}}" },
+                { "column": "success_status", "value": "={{$json.analysis.successEvaluation || 'Potential'}}" },
+                { "column": "structured_data", "value": "={{JSON.stringify($json.analysis.structuredData || {})}}" },
+                { "column": "last_analysis_at", "value": "={{new Date().toISOString()}}" },
+                { "column": "call_status", "value": "completed" }
+              ]
+            }
+          },
+          "id": "GSheetsWriteAnalysis",
+          "name": "Sheets: Write Analysis",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            460,
+            720
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        }
+      ],
+      "connections": {
+        "Webhook: Initiate Call": {
+          "main": [
+            [
+              {
+                "node": "Fn: Prepare Vapi Payload",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Fn: Prepare Vapi Payload": {
+          "main": [
+            [
+              {
+                "node": "HTTP: Vapi Call",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "HTTP: Vapi Call": {
+          "main": [
+            [
+              {
+                "node": "Sheets: Mark Initiated",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Webhook: Vapi": {
+          "main": [
+            [
+              {
+                "node": "Fn: Parse Vapi",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Fn: Parse Vapi": {
+          "main": [
+            [
+              {
+                "node": "IF: status-update?",
+                "type": "main",
+                "index": 0
+              },
+              {
+                "node": "IF: end-of-call-report?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "IF: status-update?": {
+          "main": [
+            [
+              {
+                "node": "IF: answered?",
+                "type": "main",
+                "index": 0
+              }
+            ],
+            [
+              {
+                "node": "IF: ended?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "IF: answered?": {
+          "main": [
+            [
+              {
+                "node": "Sheets: Mark Answered",
+                "type": "main",
+                "index": 0
+              }
+            ],
+            []
+          ]
+        },
+        "IF: ended?": {
+          "main": [
+            [
+              {
+                "node": "Fn: Classify ended",
+                "type": "main",
+                "index": 0
+              }
+            ],
+            []
+          ]
+        },
+        "Fn: Classify ended": {
+          "main": [
+            [
+              {
+                "node": "IF: missed/failed?",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "IF: missed/failed?": {
+          "main": [
+            [
+              {
+                "node": "Sheets: Mark Missed & Schedule Retry",
+                "type": "main",
+                "index": 0
+              }
+            ],
+            [
+              {
+                "node": "Sheets: Mark Completed",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "IF: end-of-call-report?": {
+          "main": [
+            [
+              {
+                "node": "Sheets: Write Analysis",
+                "type": "main",
+                "index": 0
+              }
+            ],
+            []
+          ]
+        }
+      },
+      "settings": {
+        "saveExecutionProgress": true
+      },
+      "staticData": null
+    },
+    {
+      "name": "Amber Smart Presales - Retry Runner (every minute)",
+      "nodes": [
+        {
+          "parameters": {
+            "triggerTimes": {
+              "item": [
+                {
+                  "mode": "everyMinute"
+                }
+              ]
+            }
+          },
+          "id": "CronEveryMinute",
+          "name": "Cron: Every Minute",
+          "type": "n8n-nodes-base.cron",
+          "typeVersion": 1,
+          "position": [
+            -260,
+            200
+          ]
+        },
+        {
+          "parameters": {
+            "operation": "lookup",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "lookupColumn": "call_status",
+            "lookupValue": "missed",
+            "returnAllMatches": true
+          },
+          "id": "GSheetsFetchMissed",
+          "name": "Sheets: Fetch Missed",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            -20,
+            120
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        },
+        {
+          "parameters": {
+            "functionCode": "// Filter to due retries (next_retry_time <= now)\nconst now = Date.now();\nconst due = items.filter(it => {\n  const next = it.json.next_retry_time;\n  if (!next) return false;\n  const t = Date.parse(next);\n  return !isNaN(t) && t <= now;\n});\nreturn due;"
+          },
+          "id": "FnFilterDue",
+          "name": "Fn: Filter Due",
+          "type": "n8n-nodes-base.function",
+          "typeVersion": 1,
+          "position": [
+            220,
+            120
+          ]
+        },
+        {
+          "parameters": {
+            "functionCode": "// Build Vapi payloads from rows\nreturn items.map(it => {\n  const num = String(it.json.number || '').startsWith('+') ? String(it.json.number) : `+${it.json.number}`;\n  return {\n    json: {\n      payload: {\n        assistantId: $env.VAPI_ASSISTANT_ID,\n        phoneNumberId: $env.VAPI_PHONE_NUMBER_ID,\n        customer: { number: num },\n        metadata: { lead_uuid: it.json.lead_uuid, initiated_at: new Date().toISOString() }\n      },\n      lead_uuid: it.json.lead_uuid\n    }\n  };\n});"
+          },
+          "id": "FnBuildCalls",
+          "name": "Fn: Build Calls",
+          "type": "n8n-nodes-base.function",
+          "typeVersion": 1,
+          "position": [
+            460,
+            120
+          ]
+        },
+        {
+          "parameters": {
+            "authentication": "predefinedCredentialType",
+            "requestMethod": "POST",
+            "url": "https://api.vapi.ai/call",
+            "jsonParameters": true,
+            "options": {},
+            "bodyParametersJson": "={{$json.payload}}",
+            "headerParametersJson": "={\n  \"Authorization\": \"Bearer {{$env.VAPI_API_KEY}}\",\n  \"Content-Type\": \"application/json\"\n}"
+          },
+          "id": "HTTPVapiRetry",
+          "name": "HTTP: Vapi Call (Retry)",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [
+            700,
+            120
+          ]
+        },
+        {
+          "parameters": {
+            "operation": "update",
+            "documentId": "={{$env.LEADS_SHEET_ID}}",
+            "sheetName": "Leads",
+            "keyRow": 1,
+            "options": {
+              "valueInputMode": "RAW"
+            },
+            "updateKey": "lead_uuid",
+            "value": "={{$json.lead_uuid}}",
+            "updateAll": false,
+            "dataToSend": {
+              "values": [
+                { "column": "call_status", "value": "initiated" },
+                { "column": "last_call_time", "value": "={{new Date().toISOString()}}" },
+                { "column": "vapi_call_id", "value": "={{$json.id}}" },
+                { "column": "next_retry_time", "value": "" }
+              ]
+            }
+          },
+          "id": "GSheetsMarkInitiatedRetry",
+          "name": "Sheets: Mark Initiated (Retry)",
+          "type": "n8n-nodes-base.googleSheets",
+          "typeVersion": 6,
+          "position": [
+            940,
+            120
+          ],
+          "credentials": {
+            "googleSheetsServiceAccount": {
+              "id": "AmberSheetsServiceAccount"
+            }
+          }
+        }
+      ],
+      "connections": {
+        "Cron: Every Minute": {
+          "main": [
+            [
+              {
+                "node": "Sheets: Fetch Missed",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Sheets: Fetch Missed": {
+          "main": [
+            [
+              {
+                "node": "Fn: Filter Due",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Fn: Filter Due": {
+          "main": [
+            [
+              {
+                "node": "Fn: Build Calls",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "Fn: Build Calls": {
+          "main": [
+            [
+              {
+                "node": "HTTP: Vapi Call (Retry)",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        },
+        "HTTP: Vapi Call (Retry)": {
+          "main": [
+            [
+              {
+                "node": "Sheets: Mark Initiated (Retry)",
+                "type": "main",
+                "index": 0
+              }
+            ]
+          ]
+        }
+      },
+      "settings": {
+        "saveExecutionProgress": true
+      },
+      "staticData": null
+    }
+  ]
+}
+
+

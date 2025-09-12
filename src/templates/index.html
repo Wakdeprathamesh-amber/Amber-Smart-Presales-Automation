@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Presales Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header>
+    <div class="container">
+      <div class="header-content">
+        <div class="logo">Amber Student Smart Presales</div>
+        <div>
+          <span id="global-loader" class="loader" style="display: none;"></span>
+          <span>Welcome, User</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <div class="container">
+      <div class="dashboard-header">
+        <h1 class="dashboard-title">Lead Management Dashboard</h1>
+        <div class="btn-group">
+          <button id="refresh-btn" class="btn btn-secondary">
+            <span class="btn-icon">🔄</span> Refresh
+          </button>
+          <button id="bulk-call-btn" class="btn btn-secondary">
+            <span class="btn-icon">📞</span> Call All Eligible
+          </button>
+          <button id="retry-config-btn" class="btn btn-secondary">
+            <span class="btn-icon">⚙️</span> Retry Settings
+          </button>
+          <button id="add-lead-btn" class="btn btn-primary">
+            <span class="btn-icon">+</span> Add Lead
+          </button>
+          <button id="upload-csv-btn" class="btn btn-primary">
+            <span class="btn-icon">⤴️</span> Upload CSV
+          </button>
+        </div>
+      </div>
+
+      <!-- Stats Cards -->
+      <div class="stats">
+        <div class="stat-card">
+          <h3 class="stat-title">Total Leads</h3>
+          <div class="stat-value" id="total-leads-count">0</div>
+          <div class="stat-change positive">In Pipeline</div>
+        </div>
+        <div class="stat-card">
+          <h3 class="stat-title">Completed Calls</h3>
+          <div class="stat-value" id="completed-calls-count">0</div>
+          <div class="stat-change">Successfully Connected</div>
+        </div>
+        <div class="stat-card">
+          <h3 class="stat-title">Pending Calls</h3>
+          <div class="stat-value" id="pending-calls-count">0</div>
+          <div class="stat-change">Waiting for Processing</div>
+        </div>
+        <div class="stat-card">
+          <h3 class="stat-title">Missed Calls</h3>
+          <div class="stat-value" id="missed-calls-count">0</div>
+          <div class="stat-change negative">Need Retry</div>
+        </div>
+        <div class="stat-card">
+          <h3 class="stat-title">Qualified Leads</h3>
+          <div class="stat-value" id="qualified-leads-count">0</div>
+          <div class="stat-change positive">Ready for Follow-up</div>
+        </div>
+      </div>
+
+      <!-- Leads Table -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">Leads</h2>
+        </div>
+        <div class="card-body">
+          <div class="filters">
+            <div class="search-input">
+              <input type="text" id="search-input" class="form-control" placeholder="Search leads...">
+            </div>
+            <div>
+              <select id="status-filter" class="form-control">
+                <option value="all">All Statuses</option>
+                <option value="pending">Pending</option>
+                <option value="initiated">Initiated</option>
+                <option value="answered">Answered</option>
+                <option value="missed">Missed</option>
+                <option value="failed">Failed</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Phone</th>
+                  <th>Email</th>
+                  <th>Call Status</th>
+                  <th>Success Status</th>
+                  <th>Retry Count</th>
+                  <th>Last Call Time</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="leads-table-body">
+                <!-- Table rows will be populated by JavaScript -->
+                <tr>
+                  <td colspan="7" class="text-center">Loading leads...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Add Lead Modal -->
+  <div id="add-lead-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Add New Lead</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="add-lead-form">
+          <div class="form-group">
+            <label for="name" class="form-label">Name</label>
+            <input type="text" id="name" name="name" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label for="number" class="form-label">Phone Number (with country code)</label>
+            <div class="phone-input-group">
+              <span class="phone-prefix">+</span>
+              <input type="tel" id="number" name="number" class="form-control phone-input" placeholder="919876543210" pattern="[0-9]{10,15}" required>
+            </div>
+            <div class="form-hint">Enter full number with country code (e.g., 919876543210 for +91 9876543210)</div>
+          </div>
+          <div class="form-group">
+            <label for="email" class="form-label">Email</label>
+            <input type="email" id="email" name="email" class="form-control">
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Add Lead</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lead Details Modal -->
+  <div id="lead-details-modal" class="modal-backdrop">
+    <div class="modal modal-large">
+      <div class="modal-header">
+        <h3 class="modal-title">Lead Details</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="lead-details-content">
+        <!-- Content will be populated by JavaScript -->
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary modal-close">Close</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Upload CSV Modal -->
+  <div id="upload-csv-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Upload Leads (CSV)</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="upload-csv-form">
+          <div class="form-group">
+            <label class="form-label">CSV File</label>
+            <input type="file" id="csv-file-input" name="file" accept=".csv" class="form-control" required>
+            <div class="form-hint">Headers: number,name,email,whatsapp_number(optional)</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Upload</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Retry Configuration Modal -->
+  <div id="retry-config-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Retry Configuration</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="retry-config-form">
+          <div class="form-group">
+            <label for="max-retries" class="form-label">Maximum Retry Attempts</label>
+            <input type="number" id="max-retries" name="max_retries" class="form-control" min="1" value="3" required>
+            <div class="form-hint">How many times to retry missed calls before giving up</div>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label">Retry Intervals</label>
+            <div class="form-hint">How long to wait between retry attempts</div>
+            
+            <div id="retry-intervals-container">
+              <!-- Will be populated by JavaScript -->
+            </div>
+            
+            <button type="button" id="add-interval-btn" class="btn btn-secondary btn-sm">
+              <span class="btn-icon">+</span> Add Interval
+            </button>
+          </div>
+          
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Configuration</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
