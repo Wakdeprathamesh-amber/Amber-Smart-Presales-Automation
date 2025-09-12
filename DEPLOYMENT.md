@@ -78,10 +78,21 @@ FLASK_DEBUG=False
 
 **Important**: You need to upload your Google Sheets credentials file:
 
+**Option A: Upload as Secret File (Recommended)**
 1. In your Render service dashboard, go to "Environment"
 2. Click "Add Environment Variable"
-3. Add a file variable named `GOOGLE_SHEETS_CREDENTIALS`
-4. Upload your `amber-sheets-credentials.json` file
+3. Select "Secret File" type
+4. Name: `GOOGLE_SHEETS_CREDENTIALS`
+5. Upload your `amber-sheets-credentials.json` file
+6. Set `GOOGLE_SHEETS_CREDENTIALS_FILE` to `/opt/render/project/src/config/amber-sheets-credentials.json`
+
+**Option B: Set as Environment Variable**
+1. Copy the contents of your `amber-sheets-credentials.json` file
+2. In Render dashboard, go to "Environment"
+3. Add environment variable:
+   - Key: `GOOGLE_SHEETS_CREDENTIALS_JSON`
+   - Value: (paste the entire JSON content)
+4. Set `GOOGLE_SHEETS_CREDENTIALS_FILE` to `config/amber-sheets-credentials.json`
 
 ### 4. Deploy
 

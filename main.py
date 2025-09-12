@@ -27,21 +27,26 @@ def start_orchestrator():
     try:
         logger.info("Initializing call orchestrator...")
         
-        # Initialize components
-        sheets_manager = SheetsManager(
-            credentials_file=os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'),
-            sheet_id=os.getenv('LEADS_SHEET_ID')
-        )
+        # Initialize components with error handling
+        try:
+            sheets_manager = SheetsManager(
+                credentials_file=os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'),
+                sheet_id=os.getenv('LEADS_SHEET_ID')
+            )
 
-        retry_intervals = [int(x) for x in os.getenv('RETRY_INTERVALS', '1,4,24').split(',')]
-        retry_units = os.getenv('RETRY_UNITS', 'hours')
-        retry_manager = RetryManager(
-            max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
-            retry_intervals=retry_intervals,
-            interval_unit=retry_units
-        )
+            retry_intervals = [int(x) for x in os.getenv('RETRY_INTERVALS', '1,4,24').split(',')]
+            retry_units = os.getenv('RETRY_UNITS', 'hours')
+            retry_manager = RetryManager(
+                max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
+                retry_intervals=retry_intervals,
+                interval_unit=retry_units
+            )
 
-        vapi_client = VapiClient(api_key=os.getenv('VAPI_API_KEY'))
+            vapi_client = VapiClient(api_key=os.getenv('VAPI_API_KEY'))
+        except Exception as e:
+            logger.error(f"Failed to initialize components: {e}")
+            logger.error("Please check your environment variables and credentials")
+            return
         
         # Get assistant ID from environment
         assistant_id = os.getenv('VAPI_ASSISTANT_ID')
@@ -75,6 +80,14 @@ def start_orchestrator():
 if __name__ == "__main__":
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
+    
+    # Set up credentials if needed
+    try:
+        from startup import setup_credentials
+        setup_credentials()
+    except Exception as e:
+        logger.error(f"Failed to set up credentials: {e}")
+        # Continue anyway - the app will handle missing credentials gracefully
     
     # Start call orchestrator in a separate thread
     orchestrator_thread = threading.Thread(target=start_orchestrator)

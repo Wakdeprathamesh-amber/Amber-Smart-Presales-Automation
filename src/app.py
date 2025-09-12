@@ -27,32 +27,72 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize components
-sheets_manager = SheetsManager(
-    credentials_file=os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'),
-    sheet_id=os.getenv('LEADS_SHEET_ID')
-)
+# Initialize components lazily to avoid import-time errors
+sheets_manager = None
+retry_manager = None
+vapi_client = None
+webhook_handler = None
 
-# Retry config from env
-retry_intervals_env = os.getenv('RETRY_INTERVALS', '1,4,24')
-retry_units_env = os.getenv('RETRY_UNITS', 'hours')
-retry_intervals = []
-try:
-    retry_intervals = [float(x.strip()) for x in retry_intervals_env.split(',') if x.strip()]
-except Exception:
-    retry_intervals = [1, 4, 24]
-retry_manager = RetryManager(
-    max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
-    retry_intervals=retry_intervals,
-    interval_unit=retry_units_env
-)
+def get_sheets_manager():
+    """Get or create sheets manager instance."""
+    global sheets_manager
+    if sheets_manager is None:
+        credentials_file = os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE')
+        sheet_id = os.getenv('LEADS_SHEET_ID')
+        
+        if not credentials_file or not sheet_id:
+            logger.error("Missing GOOGLE_SHEETS_CREDENTIALS_FILE or LEADS_SHEET_ID environment variables")
+            raise ValueError("Google Sheets credentials not configured")
+        
+        if not os.path.exists(credentials_file):
+            logger.error(f"Credentials file not found: {credentials_file}")
+            raise ValueError(f"Credentials file not found: {credentials_file}")
+        
+        sheets_manager = SheetsManager(
+            credentials_file=credentials_file,
+            sheet_id=sheet_id
+        )
+    return sheets_manager
 
-vapi_client = VapiClient(api_key=os.getenv('VAPI_API_KEY'))
+def get_retry_manager():
+    """Get or create retry manager instance."""
+    global retry_manager
+    if retry_manager is None:
+        retry_intervals_env = os.getenv('RETRY_INTERVALS', '1,4,24')
+        retry_units_env = os.getenv('RETRY_UNITS', 'hours')
+        retry_intervals = []
+        try:
+            retry_intervals = [float(x.strip()) for x in retry_intervals_env.split(',') if x.strip()]
+        except Exception:
+            retry_intervals = [1, 4, 24]
+        
+        retry_manager = RetryManager(
+            max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
+            retry_intervals=retry_intervals,
+            interval_unit=retry_units_env
+        )
+    return retry_manager
 
-webhook_handler = WebhookHandler(
-    sheets_manager=sheets_manager,
-    retry_manager=retry_manager
-)
+def get_vapi_client():
+    """Get or create Vapi client instance."""
+    global vapi_client
+    if vapi_client is None:
+        api_key = os.getenv('VAPI_API_KEY')
+        if not api_key:
+            logger.error("Missing VAPI_API_KEY environment variable")
+            raise ValueError("Vapi API key not configured")
+        vapi_client = VapiClient(api_key=api_key)
+    return vapi_client
+
+def get_webhook_handler():
+    """Get or create webhook handler instance."""
+    global webhook_handler
+    if webhook_handler is None:
+        webhook_handler = WebhookHandler(
+            sheets_manager=get_sheets_manager(),
+            retry_manager=get_retry_manager()
+        )
+    return webhook_handler
 
 # Create Flask application
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -69,7 +109,7 @@ def get_leads():
     """Get all leads from Google Sheets."""
     try:
         # Get the worksheet
-        worksheet = sheets_manager.sheet.worksheet("Leads")
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
         
         # Check if sheet is empty or has no data rows
         values = worksheet.get_values()
@@ -100,7 +140,7 @@ def add_lead():
             return jsonify({"error": "Name and phone number are required"}), 400
         
         # Get the worksheet
-        worksheet = sheets_manager.sheet.worksheet("Leads")
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
         
         # Prepare the new lead row with stable UUID
         lead_uuid = str(uuid.uuid4())
@@ -137,8 +177,8 @@ def initiate_call(lead_uuid):
     """Initiate a call to a specific lead."""
     try:
         # Locate row by lead_uuid
-        worksheet = sheets_manager.sheet.worksheet("Leads")
-        row_index_0 = sheets_manager.find_row_by_lead_uuid(lead_uuid)
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
+        row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
         if row_index_0 is None:
             return jsonify({"error": "Lead not found"}), 404
         leads = worksheet.get_all_records()
@@ -165,7 +205,7 @@ def initiate_call(lead_uuid):
         call_time = datetime.now().isoformat()
         
         # Initiate call
-        call_result = vapi_client.initiate_outbound_call(
+        call_result = get_vapi_client().initiate_outbound_call(
             lead_data=lead_data,
             assistant_id=assistant_id,
             phone_number_id=phone_number_id
@@ -175,7 +215,7 @@ def initiate_call(lead_uuid):
             return jsonify({"error": call_result["error"]}), 500
         
         # Update lead status and call time
-        sheets_manager.update_lead_call_initiated(row_index_0, "initiated", call_time)
+        get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
         # Store vapi_call_id if available
         try:
             vapi_call_id = call_result.get('id')
@@ -201,7 +241,7 @@ def initiate_call(lead_uuid):
 def delete_lead(lead_uuid):
     """Delete a lead by lead_uuid."""
     try:
-        deleted = sheets_manager.delete_lead_by_uuid(lead_uuid)
+        deleted = get_sheets_manager().delete_lead_by_uuid(lead_uuid)
         if not deleted:
             return jsonify({"error": "Lead not found"}), 404
         return jsonify({"success": True})
@@ -217,7 +257,7 @@ def vapi_webhook():
         event_data = request.json
         logger.info(f"Received webhook event: {json.dumps(event_data)}")
         
-        result = webhook_handler.handle_event(event_data)
+        result = get_webhook_handler().handle_event(event_data)
         return jsonify(result)
     
     except Exception as e:
@@ -229,7 +269,7 @@ def get_lead_details(lead_uuid):
     """Get detailed information for a specific lead."""
     try:
         # Get the worksheet
-        worksheet = sheets_manager.sheet.worksheet("Leads")
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
         
         # Check if sheet is empty or has no data rows
         values = worksheet.get_values()
@@ -238,7 +278,7 @@ def get_lead_details(lead_uuid):
             return jsonify({"error": "No leads found in sheet"}), 404
             
         # Get all records
-        row_index_0 = sheets_manager.find_row_by_lead_uuid(lead_uuid)
+        row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
         if row_index_0 is None:
             return jsonify({"error": "Lead not found"}), 404
         leads = worksheet.get_all_records()
@@ -255,7 +295,7 @@ def get_lead_details(lead_uuid):
         
         # Get call history if available
         try:
-            call_history = sheets_manager.get_call_history(row_index_0)
+            call_history = get_sheets_manager().get_call_history(row_index_0)
             lead['call_history'] = call_history
         except Exception as e:
             logger.warning(f"Error getting call history: {e}")
@@ -271,8 +311,8 @@ def get_retry_config():
     """Get the current retry configuration."""
     try:
         config = {
-            "max_retries": retry_manager.max_retries,
-            "retry_intervals": retry_manager.retry_intervals
+            "max_retries": get_retry_manager().max_retries,
+            "retry_intervals": get_retry_manager().retry_intervals
         }
         return jsonify(config)
     except Exception as e:
@@ -284,29 +324,30 @@ def update_retry_config():
     """Update the retry configuration."""
     try:
         data = request.get_json(silent=True) or {}
-        max_retries = int(data.get('max_retries', retry_manager.max_retries))
-        intervals = data.get('retry_intervals') or retry_manager.retry_intervals
-        units = (data.get('interval_unit') or retry_manager.interval_unit).lower()
+        rm = get_retry_manager()
+        max_retries = int(data.get('max_retries', rm.max_retries))
+        intervals = data.get('retry_intervals') or rm.retry_intervals
+        units = (data.get('interval_unit') or rm.interval_unit).lower()
 
         # Normalize intervals to floats
         intervals = [float(x) for x in intervals]
 
-        retry_manager.max_retries = max_retries
-        retry_manager.retry_intervals = intervals
-        retry_manager.interval_unit = 'minutes' if units == 'minutes' else 'hours'
+        rm.max_retries = max_retries
+        rm.retry_intervals = intervals
+        rm.interval_unit = 'minutes' if units == 'minutes' else 'hours'
 
         # Reflect in process env (for consistency if other modules read it later)
         os.environ['MAX_RETRY_COUNT'] = str(max_retries)
         os.environ['RETRY_INTERVALS'] = ','.join([str(x) for x in intervals])
-        os.environ['RETRY_UNITS'] = retry_manager.interval_unit
+        os.environ['RETRY_UNITS'] = rm.interval_unit
 
         return jsonify({
             "success": True,
             "message": "Retry configuration updated successfully",
             "config": {
-                "max_retries": retry_manager.max_retries,
-                "retry_intervals": retry_manager.retry_intervals,
-                "interval_unit": retry_manager.interval_unit
+                "max_retries": rm.max_retries,
+                "retry_intervals": rm.retry_intervals,
+                "interval_unit": rm.interval_unit
             }
         })
     except Exception as e:
@@ -329,7 +370,7 @@ def bulk_upload_leads():
         if not required_cols.issubset(set([c.strip() for c in reader.fieldnames or []])):
             return jsonify({"error": "CSV must include at least 'number' and 'name' headers"}), 400
 
-        worksheet = sheets_manager.sheet.worksheet("Leads")
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
         created = 0
         errors = []
         for idx, row in enumerate(reader):
@@ -379,7 +420,7 @@ def bulk_call():
         status_filter = set(data.get('status') or ['pending', 'missed', 'failed'])
         limit = int(data.get('limit') or 50)
 
-        worksheet = sheets_manager.sheet.worksheet("Leads")
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
         leads = worksheet.get_all_records()
 
         eligible = []
@@ -407,7 +448,7 @@ def bulk_call():
                     errors.append({"lead_uuid": lead_uuid or '?', "error": "Missing uuid or number"})
                     continue
                 call_time = datetime.now().isoformat()
-                result = vapi_client.initiate_outbound_call(
+                result = get_vapi_client().initiate_outbound_call(
                     lead_data={"lead_uuid": lead_uuid, "number": number, "name": lead.get('name'), "email": lead.get('email')},
                     assistant_id=assistant_id,
                     phone_number_id=phone_number_id
@@ -416,7 +457,7 @@ def bulk_call():
                     errors.append({"lead_uuid": lead_uuid, "error": result["error"]})
                     continue
                 # update status and vapi id
-                sheets_manager.update_lead_call_initiated(row_index_0, "initiated", call_time)
+                get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
                 try:
                     vapi_call_id = result.get('id')
                     if vapi_call_id:
