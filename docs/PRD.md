@@ -121,6 +121,30 @@ Webhook ◀─────────────── WhatsApp Webhooks (/web
   - Persist inbound messages to Sheets (Conversations) and show in dashboard.
 - Compliance: opt-in tracking, STOP handling, 24-hour window.
 
+#### 11.1 WhatsApp Templates & Flows (Planned)
+- Template A: post_call_success
+  - Use-case: Call answered and completed; send summary/follow-up links.
+  - Variables: {{1}} student_name, {{2}} followup_link (or booking CTA), {{3}} advisor signature.
+  - Trigger: End-of-call analysis received with success_status in [Qualified, Potential].
+- Template B: retry_fallback_no_answer
+  - Use-case: Max retries reached without connection; offer WhatsApp assistance and callback option.
+  - Variables: {{1}} student_name, {{2}} callback_link or preferred time capture prompt, {{3}} support link.
+  - Trigger: Max retry reached (missed/failed).
+- Manual send: “Send WhatsApp” UI action to send either template or custom text (within 24h window).
+
+#### 11.2 AI on WhatsApp (Two‑Way Messaging)
+- Goal: Continue qualification over chat if user replies; AI responds contextually.
+- Inputs to AI: Conversation history, lead record (name, preferences), Vapi call analysis if available.
+- Guardrails: Respect 24-hour messaging policy; switch to templates outside window.
+- Persistence: Store inbound/outbound messages with timestamps and message types.
+- Handover: If user requests or confidence low, route to human agent and mark lead as assigned.
+
+#### 11.3 Dashboard Additions for WhatsApp
+- Per-lead “Message History” beside “Call History”.
+- Manual “Send WhatsApp” with template pickers and variable preview.
+- Status badges for delivery/read receipts.
+- Filters: leads awaiting reply, within 24h window, needs human handover.
+
 ### 12. Security & Privacy
 - Secrets via environment variables/secret files; never committed.
 - Principle of least privilege for service account.
@@ -160,6 +184,12 @@ Webhook ◀─────────────── WhatsApp Webhooks (/web
 - Lead Details: contact info, call status, analysis, call history.
 - Auto-refresh when active calls present.
 
+#### 16.1 Enhancements (Planned)
+- WhatsApp Message History with send controls.
+- Bulk upload improvements: validation report, sample CSV download.
+- Agent routing: “Assign to Agent” action, with export to manual queues.
+- Attachments (future): show call recording link and transcription excerpt when available.
+
 ### 17. Current POC Achievements
 - End-to-end outbound calling via Vapi with correct payload and phone formats.
 - Real-time webhook updates; missed/failed classification refined.
@@ -177,6 +207,15 @@ Webhook ◀─────────────── WhatsApp Webhooks (/web
 - Move from Sheets to database for scale; migrations and schema.
 - Monitoring/alerting (errors, webhook failures, rate limits).
 
+### 18.1 Costing (POC Estimates)
+- Vapi: depends on plan (minutes per call, transcription/analysis). Assume $0.03–$0.08/min effective; analysis included per plan.
+- Telephony (Plivo/Twilio via Vapi): per-minute outbound rates by destination (e.g., India ~$0.006–$0.02/min). Caller ID/STIR/SHAKEN/brand registration may add setup costs.
+- WhatsApp Cloud API: template sends billed by conversation category and country; user-initiated within 24h window is often low/no cost; business-initiated templates incur country/category rates (e.g., $0.01–$0.15/conversation). Check Meta regional pricing.
+- Render: Free for POC; upgrade Starter ($7/mo) or higher for always-on.
+- Google Sheets API: free within quotas; consider BigQuery/DB costs if migrating.
+- Misc: Domain/HTTPS (Render managed), monitoring (free/basic initially).
+Note: Final costs vary by volumes (calls/minutes, WhatsApp conversations, geography). We’ll instrument metrics to forecast.
+
 ### 19. Delivery Plan (Next 2–3 Days)
 Day 1:
 - Implement WhatsApp send service + env config + manual “Send WhatsApp” action.
@@ -188,6 +227,22 @@ Day 2:
 
 Day 3:
 - Auto-send rules (max retries & post-call). Polish UI, error handling, docs.
+
+### 22. Future Roadmap
+- Inbound Voice Support (Customer Support):
+  - Provision inbound numbers; webhook to AI assistant via Vapi; IVR-lite flows.
+  - Screen intents (FAQ, policy, payment, property info) and answer using Amber knowledge base.
+  - Handover to human when out-of-policy or high-risk.
+- Knowledge Access for AI (Voice & Chat):
+  - Connect to Amber databases/FAQs/inventory via secure APIs.
+  - Retrieval-Augmented Generation (RAG) to ground responses in live data.
+- Recommendations on Call/Chat:
+  - Use structured preferences (budget, location, intake) + inventory to suggest properties.
+  - Rankers akin to BERT/YouTube/TikTok style learning-to-rank; A/B test scripts/prompts.
+- Advanced Analytics & ML:
+  - Funnel tracking with reason codes at each step (missed reasons, objections, price sensitivity).
+  - Lead scoring model predicting likelihood to book; next-best-action prompts.
+  - Cohort reports for process optimization and script improvements.
 
 ### 20. Risks & Mitigations
 - Google Sheets quotas → caching, backoff, reduce polling; consider DB migration.
