@@ -48,11 +48,6 @@ class VapiClient:
             "customer": {
                 "number": phone_number
             },
-            # Provide simple variables for prompt interpolation in Vapi UI (use {{today_human}} / {{today_iso}})
-            "variables": {
-                "today_human": today_human,
-                "today_iso": today_iso
-            },
             "metadata": {
                 # Prefer stable lead_uuid for correlation
                 "lead_uuid": lead_data.get("lead_uuid", ""),
