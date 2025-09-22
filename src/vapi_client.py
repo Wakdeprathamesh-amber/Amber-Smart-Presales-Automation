@@ -69,11 +69,21 @@ class VapiClient:
         
         try:
             response = requests.post(
-                endpoint, 
-                headers=self.headers, 
+                endpoint,
+                headers=self.headers,
                 json=payload
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as he:
+                # Provide detailed response info for debugging 4xx/5xx
+                err_body = None
+                try:
+                    err_body = response.text
+                except Exception:
+                    err_body = ''
+                print(f"Vapi call failed: status={response.status_code} body={err_body}")
+                return {"error": f"HTTP {response.status_code}", "body": err_body}
             return response.json()
         except requests.exceptions.RequestException as e:
             print(f"Error initiating call: {e}")
