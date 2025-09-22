@@ -38,11 +38,20 @@ class VapiClient:
             phone_number = f"+{phone_number}"
         
         # Payload format as per Vapi documentation
+        # Precompute date vars
+        today_iso = datetime.now().date().isoformat()
+        today_human = datetime.now().strftime("%A, %B %d, %Y")
+
         payload = {
             "assistantId": assistant_id,
             "phoneNumberId": phone_number_id,
             "customer": {
                 "number": phone_number
+            },
+            # Provide simple variables for prompt interpolation in Vapi UI (use {{today_human}} / {{today_iso}})
+            "variables": {
+                "today_human": today_human,
+                "today_iso": today_iso
             },
             "metadata": {
                 # Prefer stable lead_uuid for correlation
@@ -51,8 +60,8 @@ class VapiClient:
                 "lead_id": lead_data.get("id", ""),
                 "initiated_at": datetime.now().isoformat(),
                 # Provide current date context for assistant prompts
-                "today_iso": datetime.now().date().isoformat(),
-                "today_human": datetime.now().strftime("%A, %B %d, %Y")
+                "today_iso": today_iso,
+                "today_human": today_human
             }
         }
         
