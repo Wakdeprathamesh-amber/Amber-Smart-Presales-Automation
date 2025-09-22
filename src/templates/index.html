@@ -34,6 +34,12 @@
           <button id="retry-config-btn" class="btn btn-secondary">
             <span class="btn-icon">⚙️</span> Retry Settings
           </button>
+          <button id="wa-settings-btn" class="btn btn-secondary">
+            <span class="btn-icon">💬</span> WhatsApp Settings
+          </button>
+          <button id="email-settings-btn" class="btn btn-secondary">
+            <span class="btn-icon">✉️</span> Email Settings
+          </button>
           <button id="add-lead-btn" class="btn btn-primary">
             <span class="btn-icon">+</span> Add Lead
           </button>
@@ -226,6 +232,81 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
             <button type="submit" class="btn btn-primary">Save Configuration</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- WhatsApp Settings Modal -->
+  <div id="wa-settings-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">WhatsApp Settings</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="wa-settings-form">
+          <div class="form-group">
+            <label class="form-label">Enable Follow-up (after completed call)</label>
+            <select id="wa-enable-followup" class="form-control">
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Enable Fallback (after max retries)</label>
+            <select id="wa-enable-fallback" class="form-control">
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Follow-up Template Name</label>
+            <input type="text" id="wa-template-followup" class="form-control" placeholder="e.g., followup_after_call">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fallback Template Name</label>
+            <input type="text" id="wa-template-fallback" class="form-control" placeholder="e.g., fallback_after_retries">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Language Code</label>
+            <input type="text" id="wa-language" class="form-control" placeholder="en or en_US">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Preview</label>
+            <div id="wa-preview" class="form-hint">Template preview will appear here (uses lead name as {{1}}).</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Email Settings Modal -->
+  <div id="email-settings-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Email Settings</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="email-settings-form">
+          <div class="form-group">
+            <label class="form-label">Subject</label>
+            <input type="text" id="email-subject" class="form-control" placeholder="Welcome to Amber">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Body (supports {name})</label>
+            <textarea id="email-body" class="form-control" rows="8" placeholder="Hi {name},\n\nAmber helps with student housing...\n"></textarea>
+            <div class="form-hint">Variables: {name}</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Settings</button>
           </div>
         </form>
       </div>

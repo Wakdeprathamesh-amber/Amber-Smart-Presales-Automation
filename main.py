@@ -7,6 +7,9 @@ from src.vapi_client import VapiClient
 from src.retry_manager import RetryManager
 from src.call_orchestrator import CallOrchestrator
 from src.app import app
+from src.app import get_sheets_manager, get_email_client
+from src.email_inbound import poll_once
+import time
 
 # Load environment variables
 load_dotenv()
@@ -77,6 +80,25 @@ def start_orchestrator():
     except Exception as e:
         logger.error(f"Error in orchestrator: {e}", exc_info=True)
 
+def start_email_poller():
+    try:
+        auto_reply = (os.getenv('AUTO_EMAIL_REPLY', 'false').lower() == 'true')
+        logger.info("Starting email poller thread (IMAP)...")
+        while True:
+            try:
+                sm = get_sheets_manager()
+                ec = get_email_client()
+                # Placeholder AI function; returns None (no auto-reply) unless wired later
+                ai_func = (lambda lead_uuid, subject, body: None) if not auto_reply else (lambda lead_uuid, subject, body: None)
+                res = poll_once(sm, auto_reply=auto_reply, ai_reply_func=ai_func, email_client=ec)
+                if res and res.get('processed'):
+                    logger.info(f"Email poller processed {res.get('processed')} messages")
+            except Exception as ie:
+                logger.warning(f"Email poller iteration error: {ie}")
+            time.sleep(int(os.getenv('IMAP_POLL_SECONDS', '60')))
+    except Exception as e:
+        logger.error(f"Email poller failed to start: {e}")
+
 if __name__ == "__main__":
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
@@ -93,6 +115,12 @@ if __name__ == "__main__":
     orchestrator_thread = threading.Thread(target=start_orchestrator)
     orchestrator_thread.daemon = True
     orchestrator_thread.start()
+    
+    # Start email poller thread if IMAP is configured
+    if os.getenv('IMAP_HOST') and os.getenv('IMAP_USER') and os.getenv('IMAP_PASS'):
+        email_thread = threading.Thread(target=start_email_poller)
+        email_thread.daemon = True
+        email_thread.start()
     
     # Start Flask application for dashboard and webhooks
     port = int(os.getenv('PORT', '5001'))

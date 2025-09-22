@@ -88,6 +88,24 @@ function setupEventListeners() {
       openModal('retry-config-modal');
     });
   }
+
+  // WhatsApp settings button
+  const waSettingsBtn = document.getElementById('wa-settings-btn');
+  if (waSettingsBtn) {
+    waSettingsBtn.addEventListener('click', async () => {
+      await loadWhatsAppSettings();
+      openModal('wa-settings-modal');
+    });
+  }
+
+  // Email settings button
+  const emailSettingsBtn = document.getElementById('email-settings-btn');
+  if (emailSettingsBtn) {
+    emailSettingsBtn.addEventListener('click', async () => {
+      await loadEmailSettings();
+      openModal('email-settings-modal');
+    });
+  }
   
   // Event delegation for dynamic buttons
   document.addEventListener('click', (e) => {
@@ -107,6 +125,16 @@ function setupEventListeners() {
     if (e.target.matches('.delete-btn')) {
       const leadUuid = e.target.dataset.uuid;
       deleteLead(leadUuid);
+    }
+    // Send email button
+    if (e.target.matches('.email-btn')) {
+      const leadUuid = e.target.dataset.uuid;
+      sendEmail(leadUuid);
+    }
+    // Send WhatsApp button
+    if (e.target.matches('.wa-btn')) {
+      const leadUuid = e.target.dataset.uuid;
+      sendWhatsApp(leadUuid);
     }
   });
   
@@ -148,6 +176,23 @@ function setupEventListeners() {
   const addIntervalBtn = document.getElementById('add-interval-btn');
   if (addIntervalBtn) {
     addIntervalBtn.addEventListener('click', addRetryInterval);
+  }
+
+  // WhatsApp settings form submission
+  const waSettingsForm = document.getElementById('wa-settings-form');
+  if (waSettingsForm) {
+    waSettingsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await submitWhatsAppSettings();
+    });
+  }
+
+  const emailSettingsForm = document.getElementById('email-settings-form');
+  if (emailSettingsForm) {
+    emailSettingsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await submitEmailSettings();
+    });
   }
 }
 
@@ -291,6 +336,47 @@ function renderLeadDetails(lead) {
     });
     callHistoryHtml += '</div>';
   }
+
+  // Email timeline
+  let emailHtml = '<p>No emails yet</p>';
+  // WhatsApp timeline
+  let waHtml = '<p>No WhatsApp messages yet</p>';
+  if (lead.conversations && lead.conversations.length > 0) {
+    const emails = lead.conversations.filter(c => c.channel === 'email');
+    const was = lead.conversations.filter(c => c.channel === 'whatsapp');
+    if (emails.length > 0) {
+      const sortedE = [...emails].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+      emailHtml = '<div class="call-history">';
+      sortedE.forEach(item => {
+        emailHtml += `
+          <div class="history-item">
+            <div class="history-time">${new Date(item.timestamp).toLocaleString()}</div>
+            <div class="history-status">✉️ email · ${item.direction}</div>
+            ${item.subject ? `<div class="history-summary"><strong>${item.subject}</strong></div>` : ''}
+            ${item.content ? `<div class="history-summary">${item.content}</div>` : ''}
+            ${item.status ? `<div class="history-summary"><em>Status: ${item.status}</em></div>` : ''}
+          </div>
+        `;
+      });
+      emailHtml += '</div>';
+    }
+    if (was.length > 0) {
+      const sortedW = [...was].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+      waHtml = '<div class="call-history">';
+      sortedW.forEach(item => {
+        waHtml += `
+          <div class="history-item">
+            <div class="history-time">${new Date(item.timestamp).toLocaleString()}</div>
+            <div class="history-status">💬 whatsapp · ${item.direction}</div>
+            ${item.subject ? `<div class="history-summary"><strong>${item.subject}</strong></div>` : ''}
+            ${item.content ? `<div class="history-summary">${item.content}</div>` : ''}
+            ${item.status ? `<div class="history-summary"><em>Status: ${item.status}</em></div>` : ''}
+          </div>
+        `;
+      });
+      waHtml += '</div>';
+    }
+  }
   
   detailsContainer.innerHTML = `
     <div class="lead-details">
@@ -349,6 +435,14 @@ function renderLeadDetails(lead) {
       <div class="detail-section">
         <h4 class="section-title">Call History</h4>
         ${callHistoryHtml}
+      </div>
+      <div class="detail-section">
+        <h4 class="section-title">Email History</h4>
+        ${emailHtml}
+      </div>
+      <div class="detail-section">
+        <h4 class="section-title">WhatsApp History</h4>
+        ${waHtml}
       </div>
     </div>
   `;
@@ -419,6 +513,114 @@ function updateRetryConfigForm() {
       removeRetryInterval(index);
     });
   });
+}
+
+async function loadWhatsAppSettings() {
+  try {
+    const resp = await fetch('/api/settings/whatsapp');
+    if (!resp.ok) throw new Error('Failed to load WhatsApp settings');
+    const data = await resp.json();
+    document.getElementById('wa-enable-followup').value = String(!!data.enable_followup);
+    document.getElementById('wa-enable-fallback').value = String(!!data.enable_fallback);
+    document.getElementById('wa-template-followup').value = data.template_followup || '';
+    document.getElementById('wa-template-fallback').value = data.template_fallback || '';
+    document.getElementById('wa-language').value = data.language || 'en';
+    updateWaPreview();
+    // Update preview on input changes
+    ['wa-template-followup','wa-template-fallback','wa-language'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && !el._wa_bound) {
+        el.addEventListener('input', updateWaPreview);
+        el._wa_bound = true;
+      }
+    });
+  } catch (e) {
+    console.error('WA settings load error:', e);
+    showMessage('error', 'Failed to load WhatsApp settings');
+  }
+}
+
+function updateWaPreview() {
+  const follow = (document.getElementById('wa-template-followup').value || 'followup_after_call');
+  const fallback = (document.getElementById('wa-template-fallback').value || 'fallback_after_retries');
+  const lang = (document.getElementById('wa-language').value || 'en');
+  document.getElementById('wa-preview').textContent = `Follow-up: ${follow} | Fallback: ${fallback} | Lang: ${lang} | Params: [<lead name>]`;
+}
+
+async function submitWhatsAppSettings() {
+  showLoader(true);
+  try {
+    const payload = {
+      enable_followup: document.getElementById('wa-enable-followup').value === 'true',
+      enable_fallback: document.getElementById('wa-enable-fallback').value === 'true',
+      template_followup: document.getElementById('wa-template-followup').value || '',
+      template_fallback: document.getElementById('wa-template-fallback').value || '',
+      language: document.getElementById('wa-language').value || 'en'
+    };
+    const resp = await fetch('/api/settings/whatsapp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error('Failed to save WhatsApp settings');
+    showMessage('success', 'WhatsApp settings saved');
+    closeAllModals();
+  } catch (e) {
+    console.error('WA settings save error:', e);
+    showMessage('error', 'Failed to save WhatsApp settings');
+  } finally {
+    showLoader(false);
+  }
+}
+
+async function loadEmailSettings() {
+  try {
+    const resp = await fetch('/api/settings/email');
+    if (!resp.ok) throw new Error('Failed to load Email settings');
+    const data = await resp.json();
+    document.getElementById('email-subject').value = data.subject || '';
+    document.getElementById('email-body').value = data.body || '';
+    // If empty (first time), prefill with server defaults by calling reset
+    if (!data.subject || !data.body) {
+      await fetch('/api/settings/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reset_defaults: true })
+      });
+      const resp2 = await fetch('/api/settings/email');
+      if (resp2.ok) {
+        const d2 = await resp2.json();
+        document.getElementById('email-subject').value = d2.subject || '';
+        document.getElementById('email-body').value = d2.body || '';
+      }
+    }
+  } catch (e) {
+    console.error('Email settings load error:', e);
+    showMessage('error', 'Failed to load Email settings');
+  }
+}
+
+async function submitEmailSettings() {
+  showLoader(true);
+  try {
+    const payload = {
+      subject: document.getElementById('email-subject').value || '',
+      body: document.getElementById('email-body').value || ''
+    };
+    const resp = await fetch('/api/settings/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error('Failed to save Email settings');
+    showMessage('success', 'Email settings saved');
+    closeAllModals();
+  } catch (e) {
+    console.error('Email settings save error:', e);
+    showMessage('error', 'Failed to save Email settings');
+  } finally {
+    showLoader(false);
+  }
 }
 
 function addRetryInterval() {
@@ -626,6 +828,51 @@ async function bulkCallEligible() {
   }
 }
 
+async function sendEmail(leadUuid) {
+  showLoader(true);
+  try {
+    const resp = await fetch(`/api/leads/${leadUuid}/email`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to send email');
+    }
+    showMessage('success', 'Email sent');
+    // Optimistically mark email_sent in table
+    const lead = state.leads.find(l => l.lead_uuid === leadUuid);
+    if (lead) {
+      lead.email_sent = 'true';
+    }
+    renderLeadsTable();
+  } catch (e) {
+    console.error('Send email error:', e);
+    showMessage('error', e.message || 'Failed to send email');
+  } finally {
+    showLoader(false);
+  }
+}
+
+async function sendWhatsApp(leadUuid) {
+  showLoader(true);
+  try {
+    const resp = await fetch(`/api/leads/${leadUuid}/whatsapp`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to send WhatsApp');
+    }
+    showMessage('success', 'WhatsApp sent');
+    const lead = state.leads.find(l => l.lead_uuid === leadUuid);
+    if (lead) {
+      lead.whatsapp_sent = 'true';
+    }
+    renderLeadsTable();
+  } catch (e) {
+    console.error('Send WhatsApp error:', e);
+    showMessage('error', e.message || 'Failed to send WhatsApp');
+  } finally {
+    showLoader(false);
+  }
+}
+
 // Rendering Functions
 function renderLeadsTable() {
   const tableBody = document.getElementById('leads-table-body');
@@ -680,6 +927,10 @@ function renderLeadsTable() {
             ${lead.summary ? '<span class="btn-icon">📋</span> View Analysis' : 'Details'}
           </button>
           <button class="btn btn-danger btn-sm delete-btn" data-uuid="${lead.lead_uuid}">Delete</button>
+          ${lead.email_sent === 'true' || lead.email_sent === true ? '<span class="badge small">Email Sent</span>' : ''}
+          ${lead.whatsapp_sent === 'true' || lead.whatsapp_sent === true ? '<span class="badge small">WhatsApp Sent</span>' : ''}
+          ${(lead.email ? `<button class="btn btn-secondary btn-sm email-btn" data-uuid="${lead.lead_uuid}">Send Email</button>` : '')}
+          ${(lead.whatsapp_number || lead.number ? `<button class="btn btn-secondary btn-sm wa-btn" data-uuid="${lead.lead_uuid}">Send WhatsApp</button>` : '')}
         </div>
       </td>
     `;

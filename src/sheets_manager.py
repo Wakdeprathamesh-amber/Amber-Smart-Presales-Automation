@@ -311,6 +311,36 @@ class SheetsManager:
             call_history.append(history_entry)
         
         return call_history
+
+    # Conversations sheet helpers
+    def _get_or_create_conversations_sheet(self):
+        try:
+            return self.sheet.worksheet("Conversations")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = self.sheet.add_worksheet(title="Conversations", rows=1000, cols=12)
+            ws.update('A1:L1', [[
+                'lead_uuid','timestamp','channel','direction','subject','content','summary','metadata','message_id','status','agent_id','attachment'
+            ]])
+            return ws
+
+    def log_conversation(self, lead_uuid: str, channel: str, direction: str, timestamp: str,
+                         subject: str = '', content: str = '', summary: str = '', metadata: str = '',
+                         message_id: str = '', status: str = '', agent_id: str = '', attachment: str = ''):
+        ws = self._get_or_create_conversations_sheet()
+        row = [lead_uuid, timestamp, channel, direction, subject, content, summary, metadata, message_id, status, agent_id, attachment]
+        ws.append_row(row)
+
+    def get_conversations_by_lead(self, lead_uuid: str):
+        ws = self._get_or_create_conversations_sheet()
+        values = ws.get_all_values()
+        if not values:
+            return []
+        headers = values[0]
+        items = []
+        for r in values[1:]:
+            if len(r) > 0 and r[0] == lead_uuid:
+                items.append(dict(zip(headers, r)))
+        return items
     
     def update_retry_config(self, max_retries, retry_intervals):
         """

@@ -10,6 +10,8 @@ import uuid
 from src.sheets_manager import SheetsManager
 from src.vapi_client import VapiClient
 from src.retry_manager import RetryManager
+from src.whatsapp_client import WhatsAppClient
+from src.email_client import EmailClient
 from src.webhook_handler import WebhookHandler
 
 # Load environment variables
@@ -32,6 +34,43 @@ sheets_manager = None
 retry_manager = None
 vapi_client = None
 webhook_handler = None
+whatsapp_client = None
+email_client = None
+
+# Simple in-memory caches
+_leads_cache = {"data": None, "ts": 0}
+_details_cache = {}
+_CACHE_TTL_SECONDS = 15
+
+
+def _resolve_email_settings() -> dict:
+    """Return current email subject/body applying Eshwari defaults and overriding legacy placeholders."""
+    default_subject = 'Missed Call Follow-Up Email'
+    default_body = (
+        "Hi {name},\n\n"
+        "We just tried reaching you over a call but couldn’t get through.\n\n"
+        "Could you let us know the best way to stay in touch — WhatsApp, Call, or Email?\n\n"
+        "Also, just to confirm — are you a student planning to study in UK, Ireland, France, Germany, Spain, USA, Canada, or Australia?\n\n"
+        "If yes, it would be super helpful if you could share:\n"
+        "🎓 Country/City/University (if decided)\n"
+        "💰 Rough budget in mind\n"
+        "⏰ Timeline for moving\n"
+        "🛂 Visa status\n\n"
+        "Based on these details, our experts will curate the best housing options for you and share them directly.\n\n"
+        "Looking forward to helping you,\n"
+        "Team Amber\n"
+        "🌐 https://amberstudent.com"
+    )
+    env_subject = os.getenv('EMAIL_SUBJECT')
+    env_body = os.getenv('EMAIL_TEMPLATE_BODY')
+    legacy_subject = 'Welcome to Amber'
+    legacy_body_prefix = 'Hi {name},\n\nAmber helps with student housing'
+    subject = env_subject if env_subject else default_subject
+    body = env_body if env_body else default_body
+    if (subject.strip() == legacy_subject) or (env_body and env_body.strip().startswith(legacy_body_prefix)):
+        subject = default_subject
+        body = default_body
+    return {"subject": subject, "body": body}
 
 def get_sheets_manager():
     """Get or create sheets manager instance."""
@@ -90,9 +129,37 @@ def get_webhook_handler():
     if webhook_handler is None:
         webhook_handler = WebhookHandler(
             sheets_manager=get_sheets_manager(),
-            retry_manager=get_retry_manager()
+            retry_manager=get_retry_manager(),
+            whatsapp_client=get_whatsapp_client(optional=True),
+            whatsapp_followup_template=os.getenv('WHATSAPP_TEMPLATE_FOLLOWUP'),
+            whatsapp_fallback_template=os.getenv('WHATSAPP_TEMPLATE_FALLBACK'),
+            whatsapp_language=os.getenv('WHATSAPP_LANGUAGE', 'en'),
+            whatsapp_enable_followup=os.getenv('WHATSAPP_ENABLE_FOLLOWUP', 'true').lower() == 'true',
+            whatsapp_enable_fallback=os.getenv('WHATSAPP_ENABLE_FALLBACK', 'true').lower() == 'true'
         )
     return webhook_handler
+
+def get_whatsapp_client(optional: bool = False):
+    """Get or create WhatsApp client instance."""
+    global whatsapp_client
+    if whatsapp_client is None:
+        access_token = os.getenv('WHATSAPP_ACCESS_TOKEN')
+        phone_number_id = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
+        dry_run = os.getenv('WHATSAPP_DRY_RUN', 'false').lower() == 'true'
+        if (not access_token or not phone_number_id) and not dry_run:
+            if optional:
+                return None
+            logger.error("Missing WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID")
+            raise ValueError("WhatsApp API not configured")
+        whatsapp_client = WhatsAppClient(access_token=access_token or 'DUMMY', phone_number_id=phone_number_id or '0', dry_run=dry_run)
+    return whatsapp_client
+
+def get_email_client():
+    global email_client
+    if email_client is None:
+        # For POC default to dry-run on
+        email_client = EmailClient(dry_run=os.getenv('EMAIL_DRY_RUN', 'true').lower() == 'true')
+    return email_client
 
 # Create Flask application
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -108,6 +175,11 @@ def index():
 def get_leads():
     """Get all leads from Google Sheets."""
     try:
+        # Serve from cache if fresh
+        from time import time
+        now = time()
+        if _leads_cache["data"] is not None and (now - _leads_cache["ts"]) < _CACHE_TTL_SECONDS:
+            return jsonify(_leads_cache["data"]) 
         # Get the worksheet
         worksheet = get_sheets_manager().sheet.worksheet("Leads")
         
@@ -124,10 +196,16 @@ def get_leads():
         for idx, lead in enumerate(leads):
             lead['id'] = str(idx)
         
+        _leads_cache["data"] = leads
+        _leads_cache["ts"] = now
         return jsonify(leads)
     except Exception as e:
-        logger.error(f"Error getting leads: {e}", exc_info=True)
-        return jsonify([])  # Return empty array instead of error
+        # Serve stale cache if available to avoid blank dashboard during quota spikes
+        if _leads_cache["data"] is not None:
+            logger.warning(f"Sheets read failed, serving cached leads: {e}")
+            return jsonify(_leads_cache["data"]) 
+        logger.error(f"Error getting leads and no cache available: {e}", exc_info=True)
+        return jsonify([])
 
 @app.route('/api/leads', methods=['POST'])
 def add_lead():
@@ -216,6 +294,44 @@ def initiate_call(lead_uuid):
         
         # Update lead status and call time
         get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
+        # Send first-contact email if not already sent
+        try:
+            if str(lead.get('email_sent', 'false')).lower() != 'true' and lead.get('email'):
+                # Build email from settings
+                settings = _resolve_email_settings()
+                subject = settings["subject"]
+                template_body = settings["body"]
+                body_text = template_body.format(name=lead.get('name') or 'there')
+                tagged_subject = f"{subject} [Lead:{lead_uuid}]"
+                em_res = get_email_client().send(
+                    to_email=lead.get('email'),
+                    subject=tagged_subject,
+                    body_text=body_text,
+                    extra_headers={
+                        'X-Lead-UUID': lead_uuid,
+                        'References': lead.get('vapi_call_id', '') or ''
+                    }
+                )
+                # Mark email_sent
+                get_sheets_manager().update_fallback_status(row_index_0, email_sent=True)
+                # Log conversation
+                try:
+                    get_sheets_manager().log_conversation(
+                        lead_uuid=lead_uuid,
+                        channel='email',
+                        direction='out',
+                        timestamp=call_time,
+                        subject=tagged_subject,
+                        content=body_text,
+                        summary='',
+                        metadata=json.dumps({"dry_run": em_res.get('dry_run', False)}),
+                        message_id=em_res.get('id', ''),
+                        status='sent'
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # Store vapi_call_id if available
         try:
             vapi_call_id = call_result.get('id')
@@ -268,6 +384,12 @@ def vapi_webhook():
 def get_lead_details(lead_uuid):
     """Get detailed information for a specific lead."""
     try:
+        # Serve from cache if fresh
+        from time import time
+        now = time()
+        cached = _details_cache.get(lead_uuid)
+        if cached and (now - cached.get("ts", 0)) < _CACHE_TTL_SECONDS:
+            return jsonify(cached["data"])
         # Get the worksheet
         worksheet = get_sheets_manager().sheet.worksheet("Leads")
         
@@ -297,13 +419,22 @@ def get_lead_details(lead_uuid):
         try:
             call_history = get_sheets_manager().get_call_history(row_index_0)
             lead['call_history'] = call_history
+            conv = get_sheets_manager().get_conversations_by_lead(lead_uuid)
+            lead['conversations'] = conv
         except Exception as e:
             logger.warning(f"Error getting call history: {e}")
             lead['call_history'] = []
+            lead['conversations'] = []
         
+        _details_cache[lead_uuid] = {"data": lead, "ts": now}
         return jsonify(lead)
     except Exception as e:
-        logger.error(f"Error getting lead details: {e}", exc_info=True)
+        # Serve stale cached details if available
+        cached = _details_cache.get(lead_uuid)
+        if cached and cached.get("data"):
+            logger.warning(f"Sheets read failed, serving cached details for {lead_uuid}: {e}")
+            return jsonify(cached["data"]) 
+        logger.error(f"Error getting lead details and no cache available: {e}", exc_info=True)
         return jsonify({"error": "Failed to get lead details"}), 500
 
 @app.route('/api/retry-config', methods=['GET'])
@@ -474,6 +605,251 @@ def bulk_call():
         return jsonify({"success": True, "initiated": initiated, "errors": errors, "requested": len(eligible[:limit])}), 200
     except Exception as e:
         logger.error(f"Error in bulk call: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+# Email settings endpoints
+@app.route('/api/settings/email', methods=['GET'])
+def get_email_settings():
+    try:
+        data = _resolve_email_settings()
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error getting email settings: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/settings/email', methods=['POST'])
+def update_email_settings():
+    try:
+        data = request.get_json(silent=True) or {}
+        # Defaults used if resetting
+        default_subject = 'Missed Call Follow-Up Email'
+        default_body = (
+            "Hi {name},\n\n"
+            "We just tried reaching you over a call but couldn’t get through.\n\n"
+            "Could you let us know the best way to stay in touch — WhatsApp, Call, or Email?\n\n"
+            "Also, just to confirm — are you a student planning to study in UK, Ireland, France, Germany, Spain, USA, Canada, or Australia?\n\n"
+            "If yes, it would be super helpful if you could share:\n"
+            "🎓 Country/City/University (if decided)\n"
+            "💰 Rough budget in mind\n"
+            "⏰ Timeline for moving\n"
+            "🛂 Visa status\n\n"
+            "Based on these details, our experts will curate the best housing options for you and share them directly.\n\n"
+            "Looking forward to helping you,\n"
+            "Team Amber\n"
+            "🌐 https://amberstudent.com"
+        )
+
+        if data.get('reset_defaults'):
+            os.environ['EMAIL_SUBJECT'] = default_subject
+            os.environ['EMAIL_TEMPLATE_BODY'] = default_body
+        else:
+            if 'subject' in data:
+                os.environ['EMAIL_SUBJECT'] = data['subject'] or default_subject
+            if 'body' in data:
+                os.environ['EMAIL_TEMPLATE_BODY'] = data['body'] or default_body
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Error updating email settings: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+# WhatsApp settings endpoints (no dry-run toggle exposed)
+@app.route('/api/settings/whatsapp', methods=['GET'])
+def get_whatsapp_settings():
+    try:
+        data = {
+            "enable_followup": os.getenv('WHATSAPP_ENABLE_FOLLOWUP', 'true').lower() == 'true',
+            "enable_fallback": os.getenv('WHATSAPP_ENABLE_FALLBACK', 'true').lower() == 'true',
+            "template_followup": os.getenv('WHATSAPP_TEMPLATE_FOLLOWUP') or "",
+            "template_fallback": os.getenv('WHATSAPP_TEMPLATE_FALLBACK') or "",
+            "language": os.getenv('WHATSAPP_LANGUAGE', 'en')
+        }
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error getting WhatsApp settings: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/settings/whatsapp', methods=['POST'])
+def update_whatsapp_settings():
+    try:
+        data = request.get_json(silent=True) or {}
+        # Update in-process env so changes take effect without restart
+        if 'enable_followup' in data:
+            os.environ['WHATSAPP_ENABLE_FOLLOWUP'] = 'true' if data['enable_followup'] else 'false'
+        if 'enable_fallback' in data:
+            os.environ['WHATSAPP_ENABLE_FALLBACK'] = 'true' if data['enable_fallback'] else 'false'
+        if 'template_followup' in data:
+            os.environ['WHATSAPP_TEMPLATE_FOLLOWUP'] = data['template_followup'] or ''
+        if 'template_fallback' in data:
+            os.environ['WHATSAPP_TEMPLATE_FALLBACK'] = data['template_fallback'] or ''
+        if 'language' in data:
+            os.environ['WHATSAPP_LANGUAGE'] = data['language'] or 'en'
+
+        # Rebuild handler to apply new flags/templates
+        global webhook_handler
+        webhook_handler = None
+        get_webhook_handler()
+
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Error updating WhatsApp settings: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/leads/<lead_uuid>/whatsapp', methods=['POST'])
+def send_manual_whatsapp(lead_uuid):
+    """Send a manual WhatsApp template to a lead. Body: { template?: name, language?: code, params?: [] }"""
+    try:
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
+        row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
+        if row_index_0 is None:
+            return jsonify({"error": "Lead not found"}), 404
+        headers = worksheet.row_values(1)
+        row = worksheet.row_values(row_index_0 + 2)
+        lead = dict(zip(headers, row))
+        to_number = (lead.get('whatsapp_number') or lead.get('number') or '').strip()
+        if not to_number:
+            return jsonify({"error": "Lead has no whatsapp_number/number"}), 400
+
+        data = request.get_json(silent=True) or {}
+        template = data.get('template') or os.getenv('WHATSAPP_TEMPLATE_FOLLOWUP')
+        language = data.get('language') or os.getenv('WHATSAPP_LANGUAGE', 'en')
+        params = data.get('params') or [(lead.get('name') or 'there')]
+
+        client = get_whatsapp_client()
+        result = client.send_template(
+            to_number_e164=to_number,
+            template_name=template,
+            language=language,
+            body_parameters=params
+        )
+        if 'error' in result:
+            return jsonify(result), 502
+        # Mark whatsapp_sent
+        get_sheets_manager().update_fallback_status(row_index_0, whatsapp_sent=True)
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"Error sending manual WhatsApp: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/leads/<lead_uuid>/email', methods=['POST'])
+def send_manual_email(lead_uuid):
+    """Send a manual email to a lead using current template settings."""
+    try:
+        # Prefer cached lead data to avoid read quota
+        lead = None
+        cached_details = _details_cache.get(lead_uuid)
+        if cached_details and cached_details.get("data"):
+            lead = cached_details["data"]
+        if not lead and _leads_cache.get("data"):
+            for candidate in _leads_cache["data"] or []:
+                if candidate.get('lead_uuid') == lead_uuid:
+                    lead = candidate
+                    break
+
+        row_index_0 = None
+        to_email = ''
+        if lead:
+            to_email = (lead.get('email') or '').strip()
+        # Fallback to minimal sheet lookups only if absolutely necessary
+        if not to_email:
+            try:
+                row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
+                if row_index_0 is None:
+                    return jsonify({"error": "Lead not found"}), 404
+                # Avoid fetching entire sheet; just pull the email cell via headers mapping if available
+                worksheet = get_sheets_manager().sheet.worksheet("Leads")
+                headers = worksheet.row_values(1)
+                row = worksheet.row_values(row_index_0 + 2)
+                lead = dict(zip(headers, row))
+                to_email = (lead.get('email') or '').strip()
+            except Exception:
+                # If quota errors prevent reads and we still don't have an email, bail gracefully
+                logger.error("Unable to resolve lead email due to Sheets read limits", exc_info=True)
+                return jsonify({"error": "Unable to resolve lead email (Sheets quota). Try again shortly."}), 503
+        if not to_email:
+            return jsonify({"error": "Lead has no email"}), 400
+
+        data = request.get_json(silent=True) or {}
+        # Always prefer resolved settings unless explicit overrides are passed in body
+        settings = _resolve_email_settings()
+        subject = data.get('subject') or settings["subject"]
+        template_body = data.get('body') or settings["body"]
+        body_text = template_body.format(name=(lead.get('name') if lead else None) or 'there')
+
+        tagged_subject = f"{subject} [Lead:{lead_uuid}]"
+        em_res = get_email_client().send(
+            to_email=to_email,
+            subject=tagged_subject,
+            body_text=body_text,
+            extra_headers={
+                'X-Lead-UUID': lead_uuid,
+                'References': (lead.get('vapi_call_id') if lead else '') or ''
+            }
+        )
+        if 'error' in em_res:
+            return jsonify(em_res), 502
+
+        # Mark email_sent and log conversation
+        try:
+            if row_index_0 is None:
+                try:
+                    row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
+                except Exception:
+                    row_index_0 = None
+            if row_index_0 is not None:
+                get_sheets_manager().update_fallback_status(row_index_0, email_sent=True)
+            timestamp_now = datetime.now().isoformat()
+            # Attempt to persist to Sheets
+            try:
+                get_sheets_manager().log_conversation(
+                    lead_uuid=lead_uuid,
+                    channel='email',
+                    direction='out',
+                    timestamp=timestamp_now,
+                    subject=tagged_subject,
+                    content=body_text,
+                    summary='',
+                    metadata=json.dumps({"dry_run": em_res.get('dry_run', False)}),
+                    message_id=em_res.get('id', ''),
+                    status='sent'
+                )
+            except Exception as log_err:
+                logger.warning(f"Failed to write conversation to Sheets, will still update cache: {log_err}")
+            # Update in-memory details cache so UI reflects immediately
+            conv_entry = {
+                "lead_uuid": lead_uuid,
+                "channel": "email",
+                "direction": "out",
+                "timestamp": timestamp_now,
+                "subject": tagged_subject,
+                "content": body_text,
+                "summary": "",
+                "metadata": json.dumps({"dry_run": em_res.get('dry_run', False)}),
+                "message_id": em_res.get('id', ''),
+                "status": "sent"
+            }
+            cached = _details_cache.get(lead_uuid)
+            if cached and cached.get("data"):
+                data_obj = cached["data"]
+                # Ensure conversations array exists
+                if not isinstance(data_obj.get("conversations"), list):
+                    data_obj["conversations"] = []
+                data_obj["conversations"].append(conv_entry)
+                # mark email_sent in cached lead too
+                data_obj["email_sent"] = 'true'
+                cached["ts"] = cached.get("ts") or 0  # keep ts as is
+                _details_cache[lead_uuid] = cached
+            # Also update the leads cache row if present
+            if _leads_cache.get("data"):
+                for l in _leads_cache["data"]:
+                    if l.get('lead_uuid') == lead_uuid:
+                        l['email_sent'] = 'true'
+                        break
+        except Exception:
+            pass
+
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Error sending manual email: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/health', methods=['GET'])

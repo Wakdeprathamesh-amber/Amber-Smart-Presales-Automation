@@ -3,9 +3,18 @@ import time
 from datetime import datetime
 from src.sheets_manager import SheetsManager
 from src.retry_manager import RetryManager
+from typing import Optional
+import os
+from src.email_client import EmailClient
 
 class WebhookHandler:
-    def __init__(self, sheets_manager, retry_manager):
+    def __init__(self, sheets_manager, retry_manager, whatsapp_client: Optional[object] = None,
+                 whatsapp_followup_template: Optional[str] = None,
+                 whatsapp_fallback_template: Optional[str] = None,
+                 whatsapp_language: str = "en",
+                 whatsapp_enable_followup: bool = True,
+                 whatsapp_enable_fallback: bool = True,
+                 email_client: Optional[EmailClient] = None):
         """
         Initialize the webhook handler.
         
@@ -15,8 +24,82 @@ class WebhookHandler:
         """
         self.sheets_manager = sheets_manager
         self.retry_manager = retry_manager
+        self.whatsapp_client = whatsapp_client
+        self.whatsapp_followup_template = whatsapp_followup_template
+        self.whatsapp_fallback_template = whatsapp_fallback_template
+        self.whatsapp_language = whatsapp_language or "en"
+        self.whatsapp_enable_followup = bool(whatsapp_enable_followup)
+        self.whatsapp_enable_fallback = bool(whatsapp_enable_fallback)
         # Cache to reduce repeated sheet reads when resolving rows by lead_uuid
         self._row_cache = {}
+        self.email_client = email_client
+
+    def _resolve_email_settings(self) -> dict:
+        """Return subject/body defaults for missed-call follow-up."""
+        subject = os.getenv('EMAIL_SUBJECT') or 'Missed Call Follow-Up Email'
+        body = os.getenv('EMAIL_TEMPLATE_BODY') or (
+            "Hi {name},\n\n"
+            "We just tried reaching you over a call but couldn’t get through.\n\n"
+            "Could you let us know the best way to stay in touch — WhatsApp, Call, or Email?\n\n"
+            "Also, just to confirm — are you a student planning to study in UK, Ireland, France, Germany, Spain, USA, Canada, or Australia?\n\n"
+            "If yes, it would be super helpful if you could share:\n"
+            "🎓 Country/City/University (if decided)\n"
+            "💰 Rough budget in mind\n"
+            "⏰ Timeline for moving\n"
+            "🛂 Visa status\n\n"
+            "Based on these details, our experts will curate the best housing options for you and share them directly.\n\n"
+            "Looking forward to helping you,\n"
+            "Team Amber\n"
+            "🌐 https://amberstudent.com"
+        )
+        return {"subject": subject, "body": body}
+
+    def _maybe_send_missed_call_email(self, lead_row: int):
+        if self.email_client is None:
+            return
+        try:
+            ws = self.sheets_manager.sheet.worksheet("Leads")
+            headers = ws.row_values(1)
+            row = ws.row_values(lead_row + 2)
+            lead = dict(zip(headers, row))
+            lead_uuid = lead.get('lead_uuid') or ''
+            to_email = (lead.get('email') or '').strip()
+            already_sent = str(lead.get('email_sent', 'false')).lower() == 'true'
+            name = (lead.get('name') or 'there')
+            if not to_email or already_sent:
+                return
+            settings = self._resolve_email_settings()
+            subject = settings['subject']
+            body_text = (settings['body'] or '').format(name=name)
+            tagged_subject = f"{subject} [Lead:{lead_uuid}]"
+            res = self.email_client.send(
+                to_email=to_email,
+                subject=tagged_subject,
+                body_text=body_text,
+                extra_headers={'X-Lead-UUID': lead_uuid}
+            )
+            # Mark email_sent and log conversation
+            try:
+                self._with_retry(self.sheets_manager.update_fallback_status, lead_row, email_sent=True)
+            except Exception:
+                pass
+            try:
+                self.sheets_manager.log_conversation(
+                    lead_uuid=lead_uuid,
+                    channel='email',
+                    direction='out',
+                    timestamp=datetime.now().isoformat(),
+                    subject=tagged_subject,
+                    content=body_text,
+                    summary='',
+                    metadata=json.dumps({"dry_run": res.get('dry_run', False)}),
+                    message_id=res.get('id', ''),
+                    status='sent'
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _with_retry(self, func, *args, **kwargs):
         """Execute a sheets update with exponential backoff to handle 429s/transient errors."""
@@ -136,9 +219,9 @@ class WebhookHandler:
                     return self._handle_missed_call(lead_row, event_data)
                 if any(k in reason for k in failed_keywords):
                     return self._handle_missed_call(lead_row, event_data)
-                # Default: treat as completed
-                self._with_retry(self.sheets_manager.update_lead_status, lead_row, "completed")
-                return {"status": "success", "action": "call_status_updated", "new_status": "completed"}
+            # Default: treat as completed
+            self._with_retry(self.sheets_manager.update_lead_status, lead_row, "completed")
+            return {"status": "success", "action": "call_status_updated", "new_status": "completed"}
         
         elif message_type == "end-of-call-report":
             return self._handle_call_report(lead_row, message)
@@ -160,9 +243,21 @@ class WebhookHandler:
         self._with_retry(self.sheets_manager.update_lead_status, lead_row, "missed")
         
         # Get current retry count from sheet
-        # For simplicity, we'll just use a placeholder value here
-        current_retry_count = 0  # In real implementation, get this from the sheet
+        try:
+            worksheet = self.sheets_manager.sheet.worksheet("Leads")
+            headers = worksheet.row_values(1)
+            row = worksheet.row_values(lead_row + 2)
+            lead = dict(zip(headers, row))
+            current_retry_count = int(lead.get('retry_count') or 0)
+        except Exception:
+            current_retry_count = 0
         
+        # Attempt to send a missed-call follow-up email once if not already sent
+        try:
+            self._maybe_send_missed_call_email(lead_row)
+        except Exception:
+            pass
+
         if self.retry_manager.can_retry(current_retry_count):
             # Increment retry count
             new_retry_count = current_retry_count + 1
@@ -179,7 +274,8 @@ class WebhookHandler:
                 "next_retry_time": next_retry_time
             }
         else:
-            # Max retries reached, would trigger fallback here
+            # Max retries reached: trigger WhatsApp fallback if configured
+            self._maybe_send_whatsapp_fallback(lead_row)
             return {"status": "success", "action": "max_retries_reached"}
     
     def _handle_call_report(self, lead_row, message):
@@ -216,6 +312,8 @@ class WebhookHandler:
             self._with_retry(self.sheets_manager.update_ai_analysis, lead_row, summary, success_status, structured_data)
             # Also update call status to completed
             self._with_retry(self.sheets_manager.update_lead_status, lead_row, "completed")
+            # Send WhatsApp follow-up if configured
+            self._maybe_send_whatsapp_followup(lead_row, message)
             print(f"Sheet updated successfully for lead at row {lead_row}")
             
             return {
@@ -227,3 +325,89 @@ class WebhookHandler:
         except Exception as e:
             print(f"Error updating AI analysis: {e}")
             return {"error": f"Failed to update AI analysis: {str(e)}"}
+
+    def _maybe_send_whatsapp_followup(self, lead_row: int, message: dict):
+        """Send WhatsApp follow-up after a successful call if config present."""
+        if not self.whatsapp_enable_followup or not self.whatsapp_client or not self.whatsapp_followup_template:
+            return
+        try:
+            # Resolve lead data
+            worksheet = self.sheets_manager.sheet.worksheet("Leads")
+            headers = worksheet.row_values(1)
+            row = worksheet.row_values(lead_row + 2)
+            lead = dict(zip(headers, row))
+            to_number = (lead.get('whatsapp_number') or lead.get('number') or '').strip()
+            name = (lead.get('name') or '').strip()
+            if not to_number:
+                return
+            # Prepare parameters: name and maybe a short status
+            params = [name or "there"]
+            wa_res = self.whatsapp_client.send_template(
+                to_number_e164=to_number,
+                template_name=self.whatsapp_followup_template,
+                language=self.whatsapp_language,
+                body_parameters=params
+            )
+            # Mark whatsapp_sent = true (non-destructive update)
+            self._with_retry(self.sheets_manager.update_fallback_status, lead_row, whatsapp_sent=True)
+            # Log conversation
+            try:
+                # Need lead_uuid for logging; fetch from row
+                lead_uuid = lead.get('lead_uuid') or ''
+                self.sheets_manager.log_conversation(
+                    lead_uuid=lead_uuid,
+                    channel='whatsapp',
+                    direction='out',
+                    timestamp=datetime.now().isoformat(),
+                    subject=self.whatsapp_followup_template or 'whatsapp_followup',
+                    content=f"Sent WhatsApp template {self.whatsapp_followup_template}",
+                    summary='',
+                    metadata=json.dumps({"dry_run": wa_res.get('dry_run', False), "language": self.whatsapp_language}),
+                    message_id=str(wa_res.get('messages', [{}])[0].get('id', '')) if isinstance(wa_res, dict) else '',
+                    status='sent'
+                )
+            except Exception:
+                pass
+        except Exception:
+            # Keep silent to avoid blocking flow
+            pass
+
+    def _maybe_send_whatsapp_fallback(self, lead_row: int):
+        """Send WhatsApp fallback message when max retries are reached."""
+        if not self.whatsapp_enable_fallback or not self.whatsapp_client or not self.whatsapp_fallback_template:
+            return
+        try:
+            worksheet = self.sheets_manager.sheet.worksheet("Leads")
+            headers = worksheet.row_values(1)
+            row = worksheet.row_values(lead_row + 2)
+            lead = dict(zip(headers, row))
+            to_number = (lead.get('whatsapp_number') or lead.get('number') or '').strip()
+            name = (lead.get('name') or '').strip()
+            if not to_number:
+                return
+            params = [name or "there"]
+            wa_res = self.whatsapp_client.send_template(
+                to_number_e164=to_number,
+                template_name=self.whatsapp_fallback_template,
+                language=self.whatsapp_language,
+                body_parameters=params
+            )
+            self._with_retry(self.sheets_manager.update_fallback_status, lead_row, whatsapp_sent=True)
+            try:
+                lead_uuid = lead.get('lead_uuid') or ''
+                self.sheets_manager.log_conversation(
+                    lead_uuid=lead_uuid,
+                    channel='whatsapp',
+                    direction='out',
+                    timestamp=datetime.now().isoformat(),
+                    subject=self.whatsapp_fallback_template or 'whatsapp_fallback',
+                    content=f"Sent WhatsApp template {self.whatsapp_fallback_template}",
+                    summary='',
+                    metadata=json.dumps({"dry_run": wa_res.get('dry_run', False), "language": self.whatsapp_language}),
+                    message_id=str(wa_res.get('messages', [{}])[0].get('id', '')) if isinstance(wa_res, dict) else '',
+                    status='sent'
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass

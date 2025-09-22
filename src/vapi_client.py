@@ -49,7 +49,10 @@ class VapiClient:
                 "lead_uuid": lead_data.get("lead_uuid", ""),
                 # Keep legacy id fallback in case Vapi dashboard displays it
                 "lead_id": lead_data.get("id", ""),
-                "initiated_at": datetime.now().isoformat()
+                "initiated_at": datetime.now().isoformat(),
+                # Provide current date context for assistant prompts
+                "today_iso": datetime.now().date().isoformat(),
+                "today_human": datetime.now().strftime("%A, %B %d, %Y")
             }
         }
         
