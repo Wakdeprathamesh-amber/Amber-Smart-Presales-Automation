@@ -44,6 +44,12 @@ class VapiClient:
 
         payload = {
             "assistantId": assistant_id,
+            # Pass dynamic variables for prompt interpolation (e.g., {{name}})
+            "assistantOverrides": {
+                "variableValues": {
+                    "name": str(lead_data.get("name") or "")
+                }
+            },
             "phoneNumberId": phone_number_id,
             "customer": {
                 "number": phone_number
