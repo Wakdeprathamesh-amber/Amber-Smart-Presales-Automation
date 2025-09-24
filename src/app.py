@@ -549,6 +549,8 @@ def bulk_upload_leads():
         worksheet = get_sheets_manager().sheet.worksheet("Leads")
         created = 0
         errors = []
+        batch_rows = []
+        BATCH_SIZE = 50
         for idx, row in enumerate(reader):
             try:
                 number = _normalize_phone((row.get('number') or '').strip())
@@ -590,7 +592,12 @@ def bulk_upload_leads():
                     '',
                     ''
                 ]
-                worksheet.append_row(new_lead)
+                batch_rows.append(new_lead)
+                # Flush in batches to reduce rate limits
+                if len(batch_rows) >= BATCH_SIZE:
+                    worksheet.append_rows(batch_rows, value_input_option='RAW')
+                    created += len(batch_rows)
+                    batch_rows = []
                 # Write partner if provided
                 if partner:
                     headers = worksheet.row_values(1)
@@ -602,9 +609,19 @@ def bulk_upload_leads():
                     row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
                     if row_index_0 is not None:
                         worksheet.update_cell(row_index_0 + 2, partner_col, partner)
-                created += 1
+                
             except Exception as e:
                 errors.append({"row": idx + 2, "error": str(e)})
+
+        # Flush remaining rows
+        if batch_rows:
+            worksheet.append_rows(batch_rows, value_input_option='RAW')
+            created += len(batch_rows)
+            batch_rows = []
+
+        # Invalidate leads cache so UI sees new rows immediately
+        _leads_cache["data"] = None
+        _leads_cache["ts"] = 0
 
         return jsonify({"success": True, "created": created, "errors": errors}), 200
     except Exception as e:
