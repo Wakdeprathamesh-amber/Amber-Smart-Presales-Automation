@@ -21,7 +21,8 @@ const state = {
   retryConfig: {
     max_retries: 3,
     retry_intervals: [1, 4, 24]
-  }
+  },
+  currentLeadUuid: null
 };
 
 // DOM Elements
@@ -218,6 +219,8 @@ async function deleteLead(leadUuid) {
 
 // API Functions
 let activeRefreshTimer = null;
+let detailsRefreshTimer = null;
+let detailsRefreshDebounce = null;
 
 async function fetchLeads() {
   showLoader(true);
@@ -295,6 +298,9 @@ async function viewLeadDetails(leadUuid) {
     const lead = await response.json();
     renderLeadDetails(lead);
     openModal('lead-details-modal');
+    // Track active lead and start auto-refresh timer
+    state.currentLeadUuid = leadUuid;
+    startDetailsAutoRefresh();
     
     showLoader(false);
   } catch (error) {
@@ -394,6 +400,9 @@ function renderLeadDetails(lead) {
           </div>
           <div class="detail-item">
             <strong>WhatsApp:</strong> ${lead.whatsapp_number || lead.number || 'N/A'}
+          </div>
+          <div class="detail-item">
+            <strong>Partner:</strong> ${lead.partner || 'N/A'}
           </div>
         </div>
       </div>
@@ -746,6 +755,7 @@ async function submitNewLead() {
     name: formData.get('name'),
     number: phoneNumber,
     email: formData.get('email'),
+    partner: formData.get('partner'),
     call_status: 'pending'
   };
   
@@ -843,6 +853,8 @@ async function sendEmail(leadUuid) {
       lead.email_sent = 'true';
     }
     renderLeadsTable();
+    // Debounced refresh of details modal if this lead is open
+    maybeDebouncedRefreshDetails(leadUuid);
   } catch (e) {
     console.error('Send email error:', e);
     showMessage('error', e.message || 'Failed to send email');
@@ -865,12 +877,54 @@ async function sendWhatsApp(leadUuid) {
       lead.whatsapp_sent = 'true';
     }
     renderLeadsTable();
+    // Debounced refresh of details modal if this lead is open
+    maybeDebouncedRefreshDetails(leadUuid);
   } catch (e) {
     console.error('Send WhatsApp error:', e);
     showMessage('error', e.message || 'Failed to send WhatsApp');
   } finally {
     showLoader(false);
   }
+}
+
+function startDetailsAutoRefresh() {
+  stopDetailsAutoRefresh();
+  // Auto-refresh details every 15s while modal is open
+  detailsRefreshTimer = setInterval(async () => {
+    if (!state.currentLeadUuid) return;
+    try {
+      const resp = await fetch(`/api/leads/${state.currentLeadUuid}/details`);
+      if (!resp.ok) return;
+      const lead = await resp.json();
+      renderLeadDetails(lead);
+    } catch (e) {
+      // Silently ignore transient errors
+    }
+  }, 15000);
+}
+
+function stopDetailsAutoRefresh() {
+  if (detailsRefreshTimer) {
+    clearInterval(detailsRefreshTimer);
+    detailsRefreshTimer = null;
+  }
+  if (detailsRefreshDebounce) {
+    clearTimeout(detailsRefreshDebounce);
+    detailsRefreshDebounce = null;
+  }
+}
+
+function maybeDebouncedRefreshDetails(leadUuid) {
+  if (!state.currentLeadUuid || state.currentLeadUuid !== leadUuid) return;
+  if (detailsRefreshDebounce) clearTimeout(detailsRefreshDebounce);
+  detailsRefreshDebounce = setTimeout(async () => {
+    try {
+      const resp = await fetch(`/api/leads/${leadUuid}/details`);
+      if (!resp.ok) return;
+      const lead = await resp.json();
+      renderLeadDetails(lead);
+    } catch (e) {}
+  }, 1200);
 }
 
 // Rendering Functions
@@ -900,9 +954,8 @@ function renderLeadsTable() {
       retryInfo += `<br><span class="text-sm">Next: ${formattedTime}</span>`;
     }
     
-    // Determine if call button should be shown
-    const showCallButton = lead.call_status === 'pending' || 
-                          (lead.call_status === 'missed' || lead.call_status === 'failed');
+    // Always allow manual call retry regardless of status (disable only while initiated)
+    const showCallButton = true;
     const isInitiated = lead.call_status === 'initiated';
     
     row.innerHTML = `
@@ -912,8 +965,8 @@ function renderLeadsTable() {
       <td><span class="status-badge status-${lead.call_status || 'pending'}">${lead.call_status || 'pending'}</span></td>
       <td>
         ${lead.success_status ? 
-          `<span class="status-badge status-${lead.success_status.toLowerCase().replace(' ', '-')}">${lead.success_status}</span>
-           ${lead.summary ? '<span class="analysis-indicator" title="Analysis available">📊</span>' : ''}` 
+          `<span class=\"status-badge status-${lead.success_status.toLowerCase().replace(' ', '-')}\">${lead.success_status}</span>
+           ${lead.summary ? '<span class=\"analysis-indicator\" title=\"Analysis available\">📊</span>' : ''}` 
           : 'N/A'}
       </td>
       <td>${retryInfo}</td>
@@ -921,16 +974,14 @@ function renderLeadsTable() {
       <td>
         <div class="btn-group">
           ${showCallButton ? `
-            <button class="btn btn-primary btn-sm call-btn" data-uuid="${lead.lead_uuid}" ${isInitiated ? 'disabled' : ''}>${isInitiated ? 'Calling…' : 'Call'}</button>
+            <button class="btn btn-primary btn-sm call-btn btn-icon-only btn-tooltip" data-title="Call" data-uuid="${lead.lead_uuid}" ${isInitiated ? 'disabled' : ''}>📞</button>
           ` : ''}
-          <button class="btn btn-secondary btn-sm view-btn" data-uuid="${lead.lead_uuid}">
-            ${lead.summary ? '<span class="btn-icon">📋</span> View Analysis' : 'Details'}
-          </button>
-          <button class="btn btn-danger btn-sm delete-btn" data-uuid="${lead.lead_uuid}">Delete</button>
+          ${(lead.email ? `<button class=\"btn btn-secondary btn-sm email-btn btn-icon-only btn-tooltip\" data-title=\"Send Email\" data-uuid=\"${lead.lead_uuid}\">✉️</button>` : '')}
+          ${(lead.whatsapp_number || lead.number ? `<button class=\"btn btn-secondary btn-sm wa-btn btn-icon-only btn-tooltip\" data-title=\"Send WhatsApp\" data-uuid=\"${lead.lead_uuid}\">💬</button>` : '')}
+          <button class="btn btn-secondary btn-sm view-btn btn-icon-only btn-tooltip" data-title="Details" data-uuid="${lead.lead_uuid}">👁️</button>
+          <button class="btn btn-danger btn-sm delete-btn btn-icon-only btn-tooltip" data-title="Delete" data-uuid="${lead.lead_uuid}">🗑️</button>
           ${lead.email_sent === 'true' || lead.email_sent === true ? '<span class="badge small">Email Sent</span>' : ''}
           ${lead.whatsapp_sent === 'true' || lead.whatsapp_sent === true ? '<span class="badge small">WhatsApp Sent</span>' : ''}
-          ${(lead.email ? `<button class="btn btn-secondary btn-sm email-btn" data-uuid="${lead.lead_uuid}">Send Email</button>` : '')}
-          ${(lead.whatsapp_number || lead.number ? `<button class="btn btn-secondary btn-sm wa-btn" data-uuid="${lead.lead_uuid}">Send WhatsApp</button>` : '')}
         </div>
       </td>
     `;
@@ -1017,4 +1068,8 @@ function closeAllModals() {
   
   // Reset forms
   document.querySelectorAll('form').forEach(form => form.reset());
+
+  // Stop details auto refresh and clear active lead
+  stopDetailsAutoRefresh();
+  state.currentLeadUuid = null;
 }

@@ -47,7 +47,8 @@ class VapiClient:
             # Pass dynamic variables for prompt interpolation (e.g., {{name}})
             "assistantOverrides": {
                 "variableValues": {
-                    "name": str(lead_data.get("name") or "")
+                    "name": str(lead_data.get("name") or ""),
+                    "partner": str(lead_data.get("partner") or "")
                 }
             },
             "phoneNumberId": phone_number_id,

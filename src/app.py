@@ -97,13 +97,13 @@ def get_retry_manager():
     """Get or create retry manager instance."""
     global retry_manager
     if retry_manager is None:
-        retry_intervals_env = os.getenv('RETRY_INTERVALS', '1,4,24')
+        retry_intervals_env = os.getenv('RETRY_INTERVALS', '0.5,24')
         retry_units_env = os.getenv('RETRY_UNITS', 'hours')
         retry_intervals = []
         try:
             retry_intervals = [float(x.strip()) for x in retry_intervals_env.split(',') if x.strip()]
         except Exception:
-            retry_intervals = [1, 4, 24]
+            retry_intervals = [0.5, 24]
         
         retry_manager = RetryManager(
             max_retries=int(os.getenv('MAX_RETRY_COUNT', '3')),
@@ -245,6 +245,21 @@ def add_lead():
         
         # Add the new lead
         worksheet.append_row(new_lead)
+        # Optional partner field
+        try:
+            partner = (lead_data.get('partner') or '').strip()
+            if partner:
+                headers = worksheet.row_values(1)
+                if 'partner' not in headers:
+                    worksheet.update_cell(1, len(headers) + 1, 'partner')
+                    headers.append('partner')
+                partner_col = headers.index('partner') + 1
+                # Find the newly appended row and write partner
+                new_row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
+                if new_row_index_0 is not None:
+                    worksheet.update_cell(new_row_index_0 + 2, partner_col, partner)
+        except Exception:
+            pass
         return jsonify({"success": True, "message": "Lead added successfully", "lead_uuid": lead_uuid})
     except Exception as e:
         logger.error(f"Error adding lead: {e}", exc_info=True)
@@ -262,17 +277,15 @@ def initiate_call(lead_uuid):
         leads = worksheet.get_all_records()
         lead = leads[row_index_0]
         
-        # Check if lead status allows calling (pending or missed/failed with retry)
-        valid_statuses = ['pending', 'missed', 'failed']
-        if lead.get('call_status') not in valid_statuses:
-            return jsonify({"error": f"Cannot call lead with status: {lead.get('call_status')}"}), 400
+        # Allow manual call at any status; backend will record initiation time
         
         # Prepare lead data
         lead_data = {
             "lead_uuid": lead_uuid,
             "number": lead.get('number'),
             "name": lead.get('name'),
-            "email": lead.get('email')
+            "email": lead.get('email'),
+            "partner": lead.get('partner')
         }
         
         # Get Vapi assistant ID and phone number ID
@@ -294,6 +307,16 @@ def initiate_call(lead_uuid):
         
         # Update lead status and call time
         get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
+        # Increment retry_count for manual initiation, regardless of previous status
+        try:
+            current_retry = int(str(lead.get('retry_count') or '0'))
+        except Exception:
+            current_retry = 0
+        next_retry_time = ''
+        try:
+            get_sheets_manager().update_lead_retry(row_index_0, current_retry + 1, next_retry_time)
+        except Exception:
+            pass
         # Send first-contact email if not already sent
         try:
             if str(lead.get('email_sent', 'false')).lower() != 'true' and lead.get('email'):
@@ -487,7 +510,7 @@ def update_retry_config():
 
 @app.route('/api/leads/bulk-upload', methods=['POST'])
 def bulk_upload_leads():
-    """Upload leads via CSV (columns: number,name,email,whatsapp_number(optional))."""
+    """Upload leads via CSV (columns: number,name,email,whatsapp_number(optional),partner(optional))."""
     try:
         if 'file' not in request.files:
             return jsonify({"error": "CSV file is required with key 'file'"}), 400
@@ -510,6 +533,7 @@ def bulk_upload_leads():
                 name = (row.get('name') or '').strip()
                 email = (row.get('email') or '').strip()
                 whatsapp_number = (row.get('whatsapp_number') or number).strip()
+                partner = (row.get('partner') or '').strip()
                 if not number or not name:
                     errors.append({"row": idx + 2, "error": "Missing number or name"})
                     continue
@@ -533,6 +557,17 @@ def bulk_upload_leads():
                     ''
                 ]
                 worksheet.append_row(new_lead)
+                # Write partner if provided
+                if partner:
+                    headers = worksheet.row_values(1)
+                    if 'partner' not in headers:
+                        worksheet.update_cell(1, len(headers) + 1, 'partner')
+                        headers.append('partner')
+                    partner_col = headers.index('partner') + 1
+                    # Find row just appended
+                    row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
+                    if row_index_0 is not None:
+                        worksheet.update_cell(row_index_0 + 2, partner_col, partner)
                 created += 1
             except Exception as e:
                 errors.append({"row": idx + 2, "error": str(e)})

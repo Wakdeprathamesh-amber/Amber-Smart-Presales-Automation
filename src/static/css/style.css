@@ -268,6 +268,32 @@ tr:last-child td {
   gap: 0.5rem;
 }
 
+/* Icon-only buttons */
+.btn-icon-only {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+.btn-tooltip {
+  position: relative;
+}
+
+.btn-tooltip[data-title]:hover:after {
+  content: attr(data-title);
+  position: absolute;
+  bottom: 110%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.8);
+  color: #fff;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* Modal */
 .modal-backdrop {
   position: fixed;

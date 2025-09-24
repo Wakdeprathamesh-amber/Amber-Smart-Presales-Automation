@@ -153,6 +153,11 @@
             <label for="email" class="form-label">Email</label>
             <input type="email" id="email" name="email" class="form-control">
           </div>
+          <div class="form-group">
+            <label for="partner" class="form-label">Partner (optional)</label>
+            <input type="text" id="partner" name="partner" class="form-control" placeholder="e.g., CollegeDekho">
+            <div class="form-hint">Will be used in calls/emails: "received your details via {partner}"</div>
+          </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
             <button type="submit" class="btn btn-primary">Add Lead</button>
@@ -190,7 +195,7 @@
           <div class="form-group">
             <label class="form-label">CSV File</label>
             <input type="file" id="csv-file-input" name="file" accept=".csv" class="form-control" required>
-            <div class="form-hint">Headers: number,name,email,whatsapp_number(optional)</div>
+            <div class="form-hint">Headers: number,name,email,whatsapp_number(optional),partner(optional)</div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>

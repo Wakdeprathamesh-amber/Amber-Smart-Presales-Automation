@@ -11,7 +11,8 @@ class RetryManager:
             interval_unit (str): 'hours' or 'minutes'
         """
         self.max_retries = max_retries
-        self.retry_intervals = retry_intervals or [1, 4, 24]  # Default values
+        # Defaults: 30 minutes then 24 hours
+        self.retry_intervals = retry_intervals or [0.5, 24]
         self.interval_unit = (interval_unit or 'hours').lower()
     
     def can_retry(self, current_retry_count):
