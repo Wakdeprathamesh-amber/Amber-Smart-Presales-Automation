@@ -171,6 +171,14 @@ def _normalize_phone(raw: str) -> str:
         return ''
     return re.sub(r"\D+", "", str(raw))
 
+def _is_valid_phone(digits_only: str) -> bool:
+    """Basic validation: 10-15 digits (international)."""
+    try:
+        n = len(digits_only or '')
+        return 10 <= n <= 15
+    except Exception:
+        return False
+
 # Dashboard routes
 @app.route('/')
 def index():
@@ -233,6 +241,8 @@ def add_lead():
         # Headers must match initialize_sheet schema order
         number_norm = _normalize_phone(lead_data.get('number', ''))
         whatsapp_norm = _normalize_phone(lead_data.get('number', ''))
+        if not _is_valid_phone(number_norm):
+            return jsonify({"error": "Invalid phone number. Please enter 10-15 digits."}), 400
         new_lead = [
             lead_uuid,                          # lead_uuid
             number_norm,                            # number
@@ -543,8 +553,17 @@ def bulk_upload_leads():
                 email = (row.get('email') or '').strip()
                 whatsapp_number = _normalize_phone((row.get('whatsapp_number') or number).strip())
                 partner = (row.get('partner') or '').strip()
-                if not number or not name:
-                    errors.append({"row": idx + 2, "error": "Missing number or name"})
+                if not name:
+                    errors.append({"row": idx + 2, "error": "Missing name"})
+                    continue
+                if not number:
+                    errors.append({"row": idx + 2, "error": "Missing number"})
+                    continue
+                if not _is_valid_phone(number):
+                    errors.append({"row": idx + 2, "error": "Invalid number after normalization (need 10-15 digits)"})
+                    continue
+                if whatsapp_number and not _is_valid_phone(whatsapp_number):
+                    errors.append({"row": idx + 2, "error": "Invalid whatsapp_number after normalization (need 10-15 digits)"})
                     continue
                 lead_uuid = str(uuid.uuid4())
                 new_lead = [
