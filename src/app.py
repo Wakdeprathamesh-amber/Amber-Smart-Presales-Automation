@@ -243,10 +243,13 @@ def add_lead():
         whatsapp_norm = _normalize_phone(lead_data.get('number', ''))
         if not _is_valid_phone(number_norm):
             return jsonify({"error": "Invalid phone number. Please enter 10-15 digits."}), 400
+        # Store in E.164 format with leading + in the sheet
+        number_e164 = f"+{number_norm}"
+        whatsapp_e164 = f"+{whatsapp_norm}" if whatsapp_norm else number_e164
         new_lead = [
             lead_uuid,                          # lead_uuid
-            number_norm,                            # number
-            whatsapp_norm,                          # whatsapp_number (same as number by default)
+            number_e164,                            # number (E.164)
+            whatsapp_e164,                          # whatsapp_number (E.164)
             lead_data.get('name', ''),             # name
             lead_data.get('email', ''),            # email
             'pending',                             # call_status
@@ -565,11 +568,14 @@ def bulk_upload_leads():
                 if whatsapp_number and not _is_valid_phone(whatsapp_number):
                     errors.append({"row": idx + 2, "error": "Invalid whatsapp_number after normalization (need 10-15 digits)"})
                     continue
+                # Store as E.164 with leading +
+                number_e164 = f"+{number}"
+                whatsapp_e164 = f"+{whatsapp_number}" if whatsapp_number else number_e164
                 lead_uuid = str(uuid.uuid4())
                 new_lead = [
                     lead_uuid,
-                    number,
-                    whatsapp_number or number,
+                    number_e164,
+                    whatsapp_e164,
                     name,
                     email,
                     'pending',
