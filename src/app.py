@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, url_for
 import csv
@@ -163,6 +164,12 @@ def get_email_client():
 
 # Create Flask application
 app = Flask(__name__, static_folder='static', template_folder='templates')
+# Utility
+def _normalize_phone(raw: str) -> str:
+    """Return digits-only phone string. Removes spaces and non-digits."""
+    if not raw:
+        return ''
+    return re.sub(r"\D+", "", str(raw))
 
 # Dashboard routes
 @app.route('/')
@@ -224,10 +231,12 @@ def add_lead():
         lead_uuid = str(uuid.uuid4())
         
         # Headers must match initialize_sheet schema order
+        number_norm = _normalize_phone(lead_data.get('number', ''))
+        whatsapp_norm = _normalize_phone(lead_data.get('number', ''))
         new_lead = [
             lead_uuid,                          # lead_uuid
-            lead_data.get('number', ''),           # number
-            lead_data.get('number', ''),           # whatsapp_number (same as number by default)
+            number_norm,                            # number
+            whatsapp_norm,                          # whatsapp_number (same as number by default)
             lead_data.get('name', ''),             # name
             lead_data.get('email', ''),            # email
             'pending',                             # call_status
@@ -529,10 +538,10 @@ def bulk_upload_leads():
         errors = []
         for idx, row in enumerate(reader):
             try:
-                number = (row.get('number') or '').strip()
+                number = _normalize_phone((row.get('number') or '').strip())
                 name = (row.get('name') or '').strip()
                 email = (row.get('email') or '').strip()
-                whatsapp_number = (row.get('whatsapp_number') or number).strip()
+                whatsapp_number = _normalize_phone((row.get('whatsapp_number') or number).strip())
                 partner = (row.get('partner') or '').strip()
                 if not number or not name:
                     errors.append({"row": idx + 2, "error": "Missing number or name"})
