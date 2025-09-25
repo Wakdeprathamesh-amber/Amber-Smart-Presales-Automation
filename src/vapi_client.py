@@ -131,36 +131,8 @@ class VapiClient:
                 "go:2",
                 "ahead:2"
             ]
-        if not transcriber_overrides.get("keyterm"):
-            transcriber_overrides["keyterm"] = [
-                "United Kingdom",
-                "student housing",
-                "private apartment",
-                "shared space",
-                "university accommodation",
-                "application process",
-                "study abroad",
-                "intake period",
-                "course start",
-                "scholarship options",
-                "visa application",
-                "housing budget",
-                "WhatsApp number",
-                "masters in finance",
-                "masters in management",
-                "masters in computer science",
-                "masters in data science",
-                "masters in xyz",
-                "bachelors in business",
-                "bachelors in economics",
-                "bachelors in xyz",
-                "go ahead",
-                "I’m exploring",
-                "I’m thinking",
-                "not sure yet",
-                "maybe next year",
-                "yeah sure"
-            ]
+        # Important: Only include keyterm if explicitly provided via env.
+        # Some Deepgram models (e.g., Nova-2) may not accept keyterm, causing 400.
 
         if transcriber_overrides:
             # Ensure assistantOverrides exists and then attach transcriber overrides
