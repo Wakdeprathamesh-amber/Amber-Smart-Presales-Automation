@@ -137,8 +137,9 @@ class VapiClient:
         if transcriber_overrides:
             # Ensure assistantOverrides exists and then attach transcriber overrides
             assistant_overrides = payload.get("assistantOverrides") or {}
+            # Vapi requires provider if transcriber is overridden
             assistant_overrides["transcriber"] = {
-                # Provider/model are inherited from the Assistant; we only override boosts
+                "provider": "deepgram",
                 **transcriber_overrides
             }
             payload["assistantOverrides"] = assistant_overrides
