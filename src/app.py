@@ -313,6 +313,12 @@ def initiate_call(lead_uuid):
         # Get Vapi assistant ID and phone number ID
         assistant_id = os.getenv('VAPI_ASSISTANT_ID')
         phone_number_id = os.getenv('VAPI_PHONE_NUMBER_ID')
+        if not assistant_id or not phone_number_id:
+            logger.error("Missing VAPI_ASSISTANT_ID or VAPI_PHONE_NUMBER_ID")
+            return jsonify({
+                "error": "Vapi configuration missing",
+                "details": "Set VAPI_ASSISTANT_ID and VAPI_PHONE_NUMBER_ID in environment"
+            }), 500
         
         # Record call initiation time
         call_time = datetime.now().isoformat()
@@ -325,7 +331,11 @@ def initiate_call(lead_uuid):
         )
         
         if "error" in call_result:
-            return jsonify({"error": call_result["error"]}), 500
+            # Surface Vapi response body for debugging (if present)
+            return jsonify({
+                "error": call_result.get("error"),
+                "details": call_result.get("body")
+            }), 500
         
         # Update lead status and call time
         get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
