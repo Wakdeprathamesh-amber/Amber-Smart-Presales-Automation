@@ -65,6 +65,14 @@ Amber Student Smart Presales automation streamlines the outbound lead qualificat
    VAPI_ASSISTANT_ID=your_assistant_id_here
    VAPI_PHONE_NUMBER_ID=your_phone_number_id_here
 
+   # Optional: Deepgram Transcriber Customization
+   # Single-word tokens (letters/digits) with optional :int boost
+   # Example: snuffleupagus:5,systrom,krieger
+   VAPI_TRANSCRIBER_KEYWORDS=
+   # Multi-word phrases without intensifiers
+   # Example: order number,account ID,PCI compliance
+   VAPI_TRANSCRIBER_KEYTERMS=
+
    # Retry Configuration
    MAX_RETRY_COUNT=3
    RETRY_INTERVALS=1,4,24  # Hours between retry attempts

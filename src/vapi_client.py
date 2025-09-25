@@ -66,6 +66,110 @@ class VapiClient:
                 "today_human": today_human
             }
         }
+
+        # Optionally pass Deepgram keyword/keyterm boosts via assistant overrides
+        # Env format examples:
+        #   VAPI_TRANSCRIBER_KEYWORDS=snuffleupagus:5,systrom,krieger
+        #   VAPI_TRANSCRIBER_KEYTERMS=order number,account ID,PCI compliance
+        dg_keywords_csv = os.getenv("VAPI_TRANSCRIBER_KEYWORDS", "").strip()
+        dg_keyterms_csv = os.getenv("VAPI_TRANSCRIBER_KEYTERMS", "").strip()
+
+        transcriber_overrides = {}
+        if dg_keywords_csv:
+            # Keep original tokens (Deepgram accepts optional :int intensifiers)
+            keywords = [token.strip() for token in dg_keywords_csv.split(",") if token.strip()]
+            if keywords:
+                transcriber_overrides["keywords"] = keywords
+        if dg_keyterms_csv:
+            keyterms = [phrase.strip() for phrase in dg_keyterms_csv.split(",") if phrase.strip()]
+            if keyterms:
+                transcriber_overrides["keyterm"] = keyterms
+
+        # If no env provided, use in-code defaults
+        if not transcriber_overrides.get("keywords"):
+            transcriber_overrides["keywords"] = [
+                "UK:5",
+                "USA:5",
+                "Canada:3",
+                "Ireland:3",
+                "France:3",
+                "Spain:3",
+                "Germany:3",
+                "Australia:3",
+                "Amber:5",
+                "IELTS:4",
+                "TOEFL:4",
+                "GRE:4",
+                "GMAT:4",
+                "SAT:4",
+                "MSC:5",
+                "MBA:4",
+                "Bachelors:3",
+                "Masters:3",
+                "PhD:3",
+                "September:3",
+                "January:3",
+                "May:3",
+                "February:3",
+                "Intake:3",
+                "Visa:4",
+                "Guarantor:4",
+                "Budget:3",
+                "WhatsApp:4",
+                "Housing:3",
+                "Dorm:3",
+                "Apartment:3",
+                "Shared:3",
+                "exploring:2",
+                "maybe:2",
+                "thinking:2",
+                "yeah:2",
+                "yess:2",
+                "sure:2",
+                "ok:2",
+                "fine:2",
+                "go:2",
+                "ahead:2"
+            ]
+        if not transcriber_overrides.get("keyterm"):
+            transcriber_overrides["keyterm"] = [
+                "United Kingdom",
+                "student housing",
+                "private apartment",
+                "shared space",
+                "university accommodation",
+                "application process",
+                "study abroad",
+                "intake period",
+                "course start",
+                "scholarship options",
+                "visa application",
+                "housing budget",
+                "WhatsApp number",
+                "masters in finance",
+                "masters in management",
+                "masters in computer science",
+                "masters in data science",
+                "masters in xyz",
+                "bachelors in business",
+                "bachelors in economics",
+                "bachelors in xyz",
+                "go ahead",
+                "I’m exploring",
+                "I’m thinking",
+                "not sure yet",
+                "maybe next year",
+                "yeah sure"
+            ]
+
+        if transcriber_overrides:
+            # Ensure assistantOverrides exists and then attach transcriber overrides
+            assistant_overrides = payload.get("assistantOverrides") or {}
+            assistant_overrides["transcriber"] = {
+                # Provider/model are inherited from the Assistant; we only override boosts
+                **transcriber_overrides
+            }
+            payload["assistantOverrides"] = assistant_overrides
         
         print(f"Calling API with payload: {json.dumps(payload, indent=2)}")
         
