@@ -336,6 +336,7 @@ function renderLeadDetails(lead) {
         <div class="history-item">
           <div class="history-time">${new Date(entry.time).toLocaleString()}</div>
           <div class="history-status"><span class="status-badge status-${entry.status}">${entry.status}</span></div>
+          ${entry.ended_reason ? `<div class="history-summary"><em>Reason: ${entry.ended_reason}</em></div>` : ''}
           ${entry.summary ? `<div class="history-summary">${entry.summary}</div>` : ''}
           ${entry.success_status ? `<div class="history-success">Result: <span class="status-badge status-${entry.success_status.toLowerCase().replace(' ', '-')}">${entry.success_status}</span></div>` : ''}
         </div>
@@ -433,12 +434,20 @@ function renderLeadDetails(lead) {
           <div class="summary-text">${lead.summary || 'No summary available'}</div>
         </div>
         <div class="detail-item full-width">
+          <strong>Ended Reason:</strong>
+          <div class="summary-text">${lead.last_ended_reason || 'N/A'}</div>
+        </div>
+        <div class="detail-item full-width">
           <strong>Success Status:</strong>
           ${lead.success_status ? `<span class="status-badge status-${lead.success_status.toLowerCase().replace(' ', '-')}">${lead.success_status}</span>` : 'N/A'}
         </div>
         <div class="detail-item full-width">
           <strong>Structured Data:</strong>
           ${structuredDataHtml}
+        </div>
+        <div class="detail-item full-width">
+          <strong>Transcript:</strong>
+          <div class="summary-text" style="white-space: pre-wrap;">${lead.transcript || 'Transcript not available yet'}</div>
         </div>
       </div>
       

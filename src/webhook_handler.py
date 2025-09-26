@@ -6,6 +6,7 @@ from src.retry_manager import RetryManager
 from typing import Optional
 import os
 from src.email_client import EmailClient
+from src.vapi_client import VapiClient
 
 class WebhookHandler:
     def __init__(self, sheets_manager, retry_manager, whatsapp_client: Optional[object] = None,
@@ -14,7 +15,8 @@ class WebhookHandler:
                  whatsapp_language: str = "en",
                  whatsapp_enable_followup: bool = True,
                  whatsapp_enable_fallback: bool = True,
-                 email_client: Optional[EmailClient] = None):
+                 email_client: Optional[EmailClient] = None,
+                 vapi_client: Optional[VapiClient] = None):
         """
         Initialize the webhook handler.
         
@@ -33,6 +35,7 @@ class WebhookHandler:
         # Cache to reduce repeated sheet reads when resolving rows by lead_uuid
         self._row_cache = {}
         self.email_client = email_client
+        self.vapi_client = vapi_client
 
     def _resolve_email_settings(self) -> dict:
         """Return subject/body defaults for missed-call follow-up."""
@@ -204,6 +207,11 @@ class WebhookHandler:
             # On ended, decide based on reason
             if status == "ended":
                 reason = (ended_reason or "").lower()
+                try:
+                    # Persist raw ended reason
+                    self._with_retry(self.sheets_manager.update_last_ended_reason, lead_row, ended_reason or '')
+                except Exception:
+                    pass
                 # Consider substrings and common SIP indicators
                 missed_keywords = [
                     "no-answer", "noanswer", "rejected", "busy", "timeout", "cancelled", "canceled",
@@ -312,6 +320,24 @@ class WebhookHandler:
             self._with_retry(self.sheets_manager.update_ai_analysis, lead_row, summary, success_status, structured_data)
             # Also update call status to completed
             self._with_retry(self.sheets_manager.update_lead_status, lead_row, "completed")
+            # Attempt to fetch transcript if possible
+            try:
+                call_info = message.get("call", {})
+                call_id = (call_info or {}).get("id")
+                if not call_id:
+                    call_id = (analysis or {}).get("callId")
+                if call_id and self.vapi_client is not None:
+                    t = self.vapi_client.get_transcription(call_id)
+                    transcript_text = ''
+                    if isinstance(t, dict):
+                        transcript_text = t.get('transcript') or t.get('text') or ''
+                        # Some APIs return array of segments
+                        if not transcript_text and isinstance(t.get('segments'), list):
+                            transcript_text = ' '.join([s.get('text','') for s in t['segments']])
+                    if transcript_text:
+                        self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
+            except Exception as te:
+                print(f"Transcript fetch/store skipped: {te}")
             # Send WhatsApp follow-up if configured
             self._maybe_send_whatsapp_followup(lead_row, message)
             print(f"Sheet updated successfully for lead at row {lead_row}")

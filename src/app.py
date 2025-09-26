@@ -136,8 +136,11 @@ def get_webhook_handler():
             whatsapp_fallback_template=os.getenv('WHATSAPP_TEMPLATE_FALLBACK'),
             whatsapp_language=os.getenv('WHATSAPP_LANGUAGE', 'en'),
             whatsapp_enable_followup=os.getenv('WHATSAPP_ENABLE_FOLLOWUP', 'true').lower() == 'true',
-            whatsapp_enable_fallback=os.getenv('WHATSAPP_ENABLE_FALLBACK', 'true').lower() == 'true'
+            whatsapp_enable_fallback=os.getenv('WHATSAPP_ENABLE_FALLBACK', 'true').lower() == 'true',
+            email_client=get_email_client(),
+            vapi_client=get_vapi_client()
         )
+        
     return webhook_handler
 
 def get_whatsapp_client(optional: bool = False):

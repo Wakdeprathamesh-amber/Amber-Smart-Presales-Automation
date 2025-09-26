@@ -107,6 +107,30 @@ class SheetsManager:
         # Row index is 0-based in our code but 1-based in sheets, and we add 1 more to skip header
         worksheet.update_cell(row_index + 2, status_col_idx, status)
         print(f"Updated lead status at row {row_index + 2} to: {status}")
+
+    def update_last_ended_reason(self, row_index: int, reason: str):
+        """Update the last_ended_reason column, creating it if missing."""
+        worksheet = self.sheet.worksheet("Leads")
+        headers = worksheet.row_values(1)
+        sheet_row = row_index + 2
+        if 'last_ended_reason' not in headers:
+            worksheet.update_cell(1, len(headers) + 1, 'last_ended_reason')
+            headers.append('last_ended_reason')
+        col_idx = headers.index('last_ended_reason') + 1
+        worksheet.update_cell(sheet_row, col_idx, reason or '')
+        print(f"Updated last_ended_reason at row {sheet_row} -> {reason}")
+
+    def update_transcript(self, row_index: int, transcript_text: str):
+        """Update transcript text column, creating it if missing."""
+        worksheet = self.sheet.worksheet("Leads")
+        headers = worksheet.row_values(1)
+        sheet_row = row_index + 2
+        if 'transcript' not in headers:
+            worksheet.update_cell(1, len(headers) + 1, 'transcript')
+            headers.append('transcript')
+        col_idx = headers.index('transcript') + 1
+        worksheet.update_cell(sheet_row, col_idx, transcript_text or '')
+        print(f"Updated transcript at row {sheet_row} (len={len(transcript_text or '')})")
     
     def update_lead_retry(self, row_index, retry_count, next_retry_time):
         """
@@ -299,15 +323,15 @@ class SheetsManager:
                 "status": lead_data['call_status'],
                 "retry_count": lead_data.get('retry_count', '0')
             }
-            
+            # Include last_ended_reason if available
+            if lead_data.get('last_ended_reason'):
+                history_entry["ended_reason"] = lead_data['last_ended_reason']
             # Add summary if available
             if lead_data.get('summary'):
                 history_entry["summary"] = lead_data['summary']
-            
             # Add success status if available
             if lead_data.get('success_status'):
                 history_entry["success_status"] = lead_data['success_status']
-            
             call_history.append(history_entry)
         
         return call_history
