@@ -492,6 +492,19 @@ def get_lead_details(lead_uuid):
         if cached and cached.get("data"):
             logger.warning(f"Sheets read failed, serving cached details for {lead_uuid}: {e}")
             return jsonify(cached["data"]) 
+        # Fallback to minimal data from leads cache to avoid 500 during quota spikes
+        if _leads_cache.get("data"):
+            try:
+                for candidate in _leads_cache["data"] or []:
+                    if candidate.get('lead_uuid') == lead_uuid:
+                        minimal = dict(candidate)
+                        # Ensure keys expected by details view exist
+                        minimal.setdefault('structured_data', {})
+                        minimal.setdefault('call_history', [])
+                        minimal.setdefault('conversations', [])
+                        return jsonify(minimal)
+            except Exception:
+                pass
         logger.error(f"Error getting lead details and no cache available: {e}", exc_info=True)
         return jsonify({"error": "Failed to get lead details"}), 500
 
