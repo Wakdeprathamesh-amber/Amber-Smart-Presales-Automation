@@ -258,6 +258,16 @@ async function fetchLeads() {
 async function initiateCall(leadUuid) {
   showLoader(true);
   
+  // Provide immediate UI feedback on the clicked button
+  const btn = document.querySelector(`.call-btn[data-uuid="${leadUuid}"]`);
+  const prevDisabled = btn ? btn.disabled : false;
+  const prevHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '📞 Calling…';
+  }
+  showMessage('info', 'Placing call…');
+
   try {
     const response = await fetch(`/api/leads/${leadUuid}/call`, {
       method: 'POST'
@@ -285,6 +295,13 @@ async function initiateCall(leadUuid) {
     console.error('Error initiating call:', error);
     showMessage('error', error.message || 'Failed to initiate call');
     showLoader(false);
+  } finally {
+    // Restore button state if it still exists in DOM (it may be re-rendered)
+    const btnNow = document.querySelector(`.call-btn[data-uuid="${leadUuid}"]`);
+    if (btnNow) {
+      btnNow.disabled = prevDisabled;
+      if (prevHtml) btnNow.innerHTML = prevHtml;
+    }
   }
 }
 
