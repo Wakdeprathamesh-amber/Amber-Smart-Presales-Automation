@@ -195,9 +195,9 @@ class WebhookHandler:
             
             print(f"Call status update: {status}, Reason: {ended_reason}")
             
-            # Treat explicit answered immediately
+            # Treat explicit answered immediately (single write)
             if status == "answered":
-                self._with_retry(self.sheets_manager.update_lead_status, lead_row, "answered")
+                self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {"call_status": "answered"})
                 return {"status": "success", "action": "call_status_updated", "new_status": "answered"}
 
             # Handle missed/failed explicitly
@@ -207,11 +207,7 @@ class WebhookHandler:
             # On ended, decide based on reason
             if status == "ended":
                 reason = (ended_reason or "").lower()
-                try:
-                    # Persist raw ended reason
-                    self._with_retry(self.sheets_manager.update_last_ended_reason, lead_row, ended_reason or '')
-                except Exception:
-                    pass
+                # Persist raw ended reason in the same write where possible
                 # Consider substrings and common SIP indicators
                 missed_keywords = [
                     "no-answer", "noanswer", "rejected", "busy", "timeout", "cancelled", "canceled",
@@ -227,8 +223,11 @@ class WebhookHandler:
                     return self._handle_missed_call(lead_row, event_data)
                 if any(k in reason for k in failed_keywords):
                     return self._handle_missed_call(lead_row, event_data)
-            # Default: treat as completed
-            self._with_retry(self.sheets_manager.update_lead_status, lead_row, "completed")
+            # Default: treat as completed and store ended reason (single write)
+            self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {
+                "call_status": "completed",
+                "last_ended_reason": ended_reason or ''
+            })
             return {"status": "success", "action": "call_status_updated", "new_status": "completed"}
         
         elif message_type == "end-of-call-report":
@@ -247,8 +246,7 @@ class WebhookHandler:
         Returns:
             dict: Result of handling the event
         """
-        # Update call status
-        self._with_retry(self.sheets_manager.update_lead_status, lead_row, "missed")
+        # We'll update status and retry fields together below when possible
         
         # Get current retry count from sheet
         try:
@@ -267,22 +265,38 @@ class WebhookHandler:
             pass
 
         if self.retry_manager.can_retry(current_retry_count):
-            # Increment retry count
+            # Increment retry count and calculate next retry time
             new_retry_count = current_retry_count + 1
-            # Calculate next retry time
             next_retry_time = self.retry_manager.get_next_retry_time(current_retry_count)
-            
-            # Update retry information
-            self._with_retry(self.sheets_manager.update_lead_retry, lead_row, new_retry_count, next_retry_time)
-            
+            # Single batched write for status + retry fields
+            self._with_retry(
+                self.sheets_manager.update_lead_fields,
+                lead_row,
+                {
+                    "call_status": "missed",
+                    "retry_count": str(new_retry_count),
+                    "next_retry_time": next_retry_time
+                }
+            )
             return {
-                "status": "success", 
+                "status": "success",
                 "action": "call_scheduled_for_retry",
                 "retry_count": new_retry_count,
                 "next_retry_time": next_retry_time
             }
         else:
-            # Max retries reached: trigger WhatsApp fallback if configured
+            # Max retries reached: persist missed + clear next_retry_time and trigger WhatsApp fallback
+            try:
+                self._with_retry(
+                    self.sheets_manager.update_lead_fields,
+                    lead_row,
+                    {
+                        "call_status": "missed",
+                        "next_retry_time": ""
+                    }
+                )
+            except Exception:
+                pass
             self._maybe_send_whatsapp_fallback(lead_row)
             return {"status": "success", "action": "max_retries_reached"}
     
@@ -315,11 +329,18 @@ class WebhookHandler:
         print(f"Structured Data: {structured_data[:100]}...")
         
         try:
-            # Update the sheet with the AI analysis
+            # Update the sheet with the AI analysis and mark completed in a single write
             print(f"Updating sheet with AI analysis for lead at row {lead_row}")
-            self._with_retry(self.sheets_manager.update_ai_analysis, lead_row, summary, success_status, structured_data)
-            # Also update call status to completed
-            self._with_retry(self.sheets_manager.update_lead_status, lead_row, "completed")
+            self._with_retry(
+                self.sheets_manager.update_lead_fields,
+                lead_row,
+                {
+                    "summary": summary,
+                    "success_status": success_status,
+                    "structured_data": structured_data,
+                    "call_status": "completed"
+                }
+            )
             # Attempt to fetch transcript if possible
             try:
                 call_info = message.get("call", {})

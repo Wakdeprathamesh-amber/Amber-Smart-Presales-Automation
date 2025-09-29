@@ -18,6 +18,8 @@ class SheetsManager:
         self.sheet_id = sheet_id
         self.client = self._authenticate()
         self.sheet = self._get_sheet()
+        # Simple headers cache per worksheet name to reduce header reads
+        self._headers_cache = {}
     
     def _authenticate(self):
         """Authenticate with Google Sheets API."""
@@ -36,6 +38,18 @@ class SheetsManager:
     def _get_sheet(self):
         """Get the specific Google Sheet."""
         return self.client.open_by_key(self.sheet_id)
+
+    def _get_headers(self, worksheet_name: str):
+        """Return cached headers for a worksheet, fetching once when missing."""
+        if worksheet_name in self._headers_cache and isinstance(self._headers_cache[worksheet_name], list):
+            return self._headers_cache[worksheet_name]
+        ws = self.sheet.worksheet(worksheet_name)
+        headers = ws.row_values(1)
+        self._headers_cache[worksheet_name] = headers
+        return headers
+
+    def _invalidate_headers(self, worksheet_name: str):
+        self._headers_cache.pop(worksheet_name, None)
     
     def get_pending_leads(self, only_retry=False):
         """
@@ -49,9 +63,8 @@ class SheetsManager:
         """
         try:
             worksheet = self.sheet.worksheet("Leads")
-            
-            # Check if sheet is empty or has no data rows
-            values = worksheet.get_values()
+            # Check if sheet is empty or has no data rows (cheap range)
+            values = worksheet.get_values('A1:A2')
             if len(values) <= 1:  # Only header row or empty
                 print("Sheet is empty or has only headers")
                 return []
@@ -100,36 +113,37 @@ class SheetsManager:
             status (str): New status (pending, initiated, answered, missed, failed, completed)
         """
         worksheet = self.sheet.worksheet("Leads")
-        # Get the column index for 'call_status'
-        headers = worksheet.row_values(1)
-        status_col_idx = headers.index('call_status') + 1  # Convert to 1-based index
-        
-        # Row index is 0-based in our code but 1-based in sheets, and we add 1 more to skip header
-        worksheet.update_cell(row_index + 2, status_col_idx, status)
+        headers = self._get_headers("Leads")
+        status_col_idx = headers.index('call_status') + 1
+        sheet_row = row_index + 2
+        # Single-call update via update_cells
+        worksheet.update_cells([gspread.Cell(row=sheet_row, col=status_col_idx, value=status)])
         print(f"Updated lead status at row {row_index + 2} to: {status}")
 
     def update_last_ended_reason(self, row_index: int, reason: str):
         """Update the last_ended_reason column, creating it if missing."""
         worksheet = self.sheet.worksheet("Leads")
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         sheet_row = row_index + 2
         if 'last_ended_reason' not in headers:
             worksheet.update_cell(1, len(headers) + 1, 'last_ended_reason')
-            headers.append('last_ended_reason')
+            headers = headers + ['last_ended_reason']
+            self._headers_cache["Leads"] = headers
         col_idx = headers.index('last_ended_reason') + 1
-        worksheet.update_cell(sheet_row, col_idx, reason or '')
+        worksheet.update_cells([gspread.Cell(row=sheet_row, col=col_idx, value=reason or '')])
         print(f"Updated last_ended_reason at row {sheet_row} -> {reason}")
 
     def update_transcript(self, row_index: int, transcript_text: str):
         """Update transcript text column, creating it if missing."""
         worksheet = self.sheet.worksheet("Leads")
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         sheet_row = row_index + 2
         if 'transcript' not in headers:
             worksheet.update_cell(1, len(headers) + 1, 'transcript')
-            headers.append('transcript')
+            headers = headers + ['transcript']
+            self._headers_cache["Leads"] = headers
         col_idx = headers.index('transcript') + 1
-        worksheet.update_cell(sheet_row, col_idx, transcript_text or '')
+        worksheet.update_cells([gspread.Cell(row=sheet_row, col=col_idx, value=transcript_text or '')])
         print(f"Updated transcript at row {sheet_row} (len={len(transcript_text or '')})")
     
     def update_lead_retry(self, row_index, retry_count, next_retry_time):
@@ -142,7 +156,7 @@ class SheetsManager:
             next_retry_time (str): ISO format timestamp for next retry
         """
         worksheet = self.sheet.worksheet("Leads")
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         
         # Get column indices
         retry_count_col_idx = headers.index('retry_count') + 1
@@ -152,8 +166,11 @@ class SheetsManager:
         sheet_row = row_index + 2
         
         # Update both cells
-        worksheet.update_cell(sheet_row, retry_count_col_idx, retry_count)
-        worksheet.update_cell(sheet_row, next_retry_col_idx, next_retry_time)
+        updates = [
+            gspread.Cell(row=sheet_row, col=retry_count_col_idx, value=str(retry_count)),
+            gspread.Cell(row=sheet_row, col=next_retry_col_idx, value=next_retry_time)
+        ]
+        worksheet.update_cells(updates)
         print(f"Updated retry info at row {sheet_row}: count={retry_count}, next={next_retry_time}")
     
     def update_ai_analysis(self, row_index, summary, success_status, structured_data):
@@ -167,13 +184,13 @@ class SheetsManager:
             structured_data (str): JSON string of structured data
         """
         worksheet = self.sheet.worksheet("Leads")
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         
         # Row index conversion (0-based to 1-based + header row)
         sheet_row = row_index + 2
         
-        # Create a dictionary of cell updates
-        cell_updates = {}
+        # Create batched cell updates
+        cell_updates = []
         
         # Find column indices
         for field, value in [
@@ -183,26 +200,13 @@ class SheetsManager:
         ]:
             try:
                 col_idx = headers.index(field) + 1
-                # Convert to A1 notation (e.g., A1, B2)
-                cell_ref = f"{chr(64 + col_idx)}{sheet_row}"
-                cell_updates[cell_ref] = value
+                cell_updates.append(gspread.Cell(row=sheet_row, col=col_idx, value=value))
             except ValueError:
                 print(f"Warning: Column '{field}' not found in sheet")
         
         # Update the cells in batches
         if cell_updates:
-            # Convert to array of arrays format as required by gspread
-            range_name = f"Leads!{list(cell_updates.keys())[0]}:{list(cell_updates.keys())[-1]}"
-            values = [[v] for v in cell_updates.values()]
-            
-            # For debugging
-            print(f"Updating range: {range_name}")
-            print(f"Values: {values}")
-            
-            # Use update() with range instead of direct dictionary update
-            for cell_ref, value in cell_updates.items():
-                worksheet.update(cell_ref, value)
-                
+            worksheet.update_cells(cell_updates)
             print(f"Updated AI analysis for row {sheet_row}")
         else:
             print("No fields to update")
@@ -217,32 +221,33 @@ class SheetsManager:
             email_sent (bool): Whether email was sent
         """
         worksheet = self.sheet.worksheet("Leads")
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         sheet_row = row_index + 2
-        
+        updates = []
         if whatsapp_sent is not None:
             whatsapp_col_idx = headers.index('whatsapp_sent') + 1
-            worksheet.update_cell(sheet_row, whatsapp_col_idx, str(whatsapp_sent).lower())
-        
+            updates.append(gspread.Cell(row=sheet_row, col=whatsapp_col_idx, value=str(whatsapp_sent).lower()))
         if email_sent is not None:
             email_col_idx = headers.index('email_sent') + 1
-            worksheet.update_cell(sheet_row, email_col_idx, str(email_sent).lower())
+            updates.append(gspread.Cell(row=sheet_row, col=email_col_idx, value=str(email_sent).lower()))
+        if updates:
+            worksheet.update_cells(updates)
 
     def find_row_by_lead_uuid(self, lead_uuid):
         """
         Find the 0-based row index for a given lead_uuid. Returns None if not found.
         """
         worksheet = self.sheet.worksheet("Leads")
-        values = worksheet.get_all_values()
-        if not values:
-            return None
-        headers = values[0]
+        headers = self._get_headers("Leads")
         if 'lead_uuid' not in headers:
             return None
-        uuid_col = headers.index('lead_uuid')
-        for i, row in enumerate(values[1:], start=1):
-            if len(row) > uuid_col and row[uuid_col] == lead_uuid:
-                return i - 1  # convert to 0-based data row index
+        uuid_col_idx_1 = headers.index('lead_uuid') + 1
+        # Read only the UUID column to minimize read units
+        uuids = worksheet.col_values(uuid_col_idx_1)
+        # uuids[0] is header, data starts at index 1
+        for i in range(1, len(uuids)):
+            if uuids[i] == lead_uuid:
+                return i - 1
         return None
 
     def delete_lead_by_uuid(self, lead_uuid):
@@ -267,23 +272,24 @@ class SheetsManager:
             call_time (str): ISO format timestamp of call initiation
         """
         worksheet = self.sheet.worksheet("Leads")
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         sheet_row = row_index + 2
         
+        updates = []
         # Update status
         status_col_idx = headers.index('call_status') + 1
-        worksheet.update_cell(sheet_row, status_col_idx, status)
+        updates.append(gspread.Cell(row=sheet_row, col=status_col_idx, value=status))
         
         # Ensure columns exist
         if 'last_call_time' not in headers:
             worksheet.update_cell(1, len(headers) + 1, 'last_call_time')
-            headers.append('last_call_time')
+            headers = headers + ['last_call_time']
+            self._headers_cache["Leads"] = headers
         if 'vapi_call_id' not in headers:
             worksheet.update_cell(1, len(headers) + 1, 'vapi_call_id')
-            headers.append('vapi_call_id')
+            headers = headers + ['vapi_call_id']
+            self._headers_cache["Leads"] = headers
 
-        # Batch update
-        updates = []
         call_time_col_idx = headers.index('last_call_time') + 1
         updates.append(gspread.Cell(row=sheet_row, col=call_time_col_idx, value=call_time))
         if vapi_call_id:
@@ -308,7 +314,7 @@ class SheetsManager:
         """
         worksheet = self.sheet.worksheet("Leads")
         lead_row = worksheet.row_values(row_index + 2)  # +2 for 0-based index and header row
-        headers = worksheet.row_values(1)
+        headers = self._get_headers("Leads")
         
         # Create a dictionary of the lead data
         lead_data = dict(zip(headers, lead_row))
@@ -422,3 +428,28 @@ class SheetsManager:
                 'max_retries': 3,
                 'retry_intervals': [1, 4, 24]
             }
+
+    def update_lead_fields(self, row_index: int, fields: dict):
+        """
+        Update multiple named fields for a given lead row in a single API call.
+
+        Args:
+            row_index (int): 0-based data row index
+            fields (dict): mapping of header name -> value
+        """
+        if not fields:
+            return
+        ws = self.sheet.worksheet("Leads")
+        headers = self._get_headers("Leads")
+        sheet_row = row_index + 2
+        updates = []
+        for name, value in fields.items():
+            if name not in headers:
+                # If trying to write to a new column, add it to header row first
+                ws.update_cell(1, len(headers) + 1, name)
+                headers = headers + [name]
+                self._headers_cache["Leads"] = headers
+            col_idx = headers.index(name) + 1
+            updates.append(gspread.Cell(row=sheet_row, col=col_idx, value=value))
+        if updates:
+            ws.update_cells(updates)
