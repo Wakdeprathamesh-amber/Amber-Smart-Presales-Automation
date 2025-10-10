@@ -34,7 +34,7 @@ def get_langfuse_client():
     # Check if LangFuse credentials are configured
     public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
     secret_key = os.getenv('LANGFUSE_SECRET_KEY')
-    host = os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+    host = os.getenv('LANGFUSE_HOST', 'https://us.cloud.langfuse.com')  # Default to US region
     
     if not public_key or not secret_key:
         logger.warning(
