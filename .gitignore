@@ -68,11 +68,13 @@ Thumbs.db
 temp/
 tmp/
 
-# Test files
-test_*.py
-*_test.py
-test/
-tests/
+# Test artifacts (but keep tests/ directory)
+.pytest_cache/
+htmlcov/
+.coverage
+*.cover
+.hypothesis/
+*.hypothesis/
 
 # Documentation
 *.md.bak

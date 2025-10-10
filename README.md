@@ -116,29 +116,45 @@ For processing call events, set up a webhook using ngrok:
 ```
 Smart Presales Version 1/
 ├── config/                 # Configuration files
-│   └── credentials.json    # Google Sheets API credentials
+│   ├── amber-sheets-credentials.json  # Google Sheets API credentials
+│   ├── config.example.env            # Example environment variables
+│   └── credentials-template.json     # Credentials template
+├── docs/                   # Documentation
+│   └── PRD.md             # Product Requirements Document
 ├── logs/                   # Application logs
-├── src/
-│   ├── static/             # Frontend assets
-│   │   ├── css/            # Stylesheet files
-│   │   └── js/             # JavaScript files
-│   ├── templates/          # HTML templates
-│   │   └── index.html      # Dashboard template
-│   ├── app.py              # Flask application
-│   ├── call_orchestrator.py # Call orchestration logic
-│   ├── init_sheet.py       # Google Sheet initialization
-│   ├── retry_manager.py    # Call retry logic
-│   ├── sheets_manager.py   # Google Sheets integration
-│   ├── vapi_client.py      # Vapi API client
-│   └── webhook_handler.py  # Webhook processing
-├── .env                    # Environment variables
-├── DASHBOARD_README.md     # Dashboard documentation
-├── main.py                 # Main application entry point
+├── src/                    # Core application source code
+│   ├── static/            # Frontend assets
+│   │   ├── css/           # Stylesheet files
+│   │   └── js/            # JavaScript files
+│   ├── templates/         # HTML templates
+│   │   └── index.html     # Dashboard template
+│   ├── app.py             # Flask application & REST API
+│   ├── call_orchestrator.py  # Call orchestration logic
+│   ├── email_client.py    # SMTP email client
+│   ├── email_inbound.py   # IMAP email polling
+│   ├── init_sheet.py      # Google Sheet initialization
+│   ├── retry_manager.py   # Call retry logic
+│   ├── sheets_manager.py  # Google Sheets integration
+│   ├── vapi_client.py     # Vapi API client
+│   ├── webhook_handler.py # Webhook event processing
+│   └── whatsapp_client.py # WhatsApp Cloud API client
+├── tests/                  # Test suite
+│   ├── test_flow.py       # End-to-end component tests
+│   ├── test_vapi_final.py # Vapi API integration tests
+│   └── test_webhook.py    # Webhook event simulation
+├── .env                    # Environment variables (create from example)
+├── DASHBOARD_README.md     # Dashboard user guide
+├── DEPLOYMENT.md           # Deployment instructions
+├── DEPLOYMENT_CHECKLIST.md # Pre-deployment checklist
+├── main.py                 # Application entry point
+├── Procfile                # Render/Heroku deployment config
+├── README.md               # This file
+├── REFACTOR_PLAN.md        # Refactoring roadmap
+├── render.yaml             # Render deployment config
 ├── requirements.txt        # Python dependencies
-├── setup.py               # Setup script
-├── test_flow.py           # End-to-end test script
-├── test_vapi_final.py     # Vapi API test script
-└── verify_sheet.py        # Sheet verification utility
+├── runtime.txt             # Python version
+├── setup.py                # Project setup script
+└── startup.py              # Render startup script
 ```
 
 ## Dashboard Usage
