@@ -2,6 +2,7 @@ import os
 import requests
 import json
 from datetime import datetime
+from src.observability import trace_vapi_call
 
 class VapiClient:
     def __init__(self, api_key):
@@ -18,6 +19,7 @@ class VapiClient:
             "Content-Type": "application/json"
         }
     
+    @trace_vapi_call
     def initiate_outbound_call(self, lead_data, assistant_id, phone_number_id):
         """
         Initiate an outbound call to a lead using Vapi.

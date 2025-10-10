@@ -7,6 +7,7 @@ from typing import Optional
 import os
 from src.email_client import EmailClient
 from src.vapi_client import VapiClient
+from src.observability import trace_webhook_event, log_call_analysis, log_conversation_message
 
 class WebhookHandler:
     def __init__(self, sheets_manager, retry_manager, whatsapp_client: Optional[object] = None,
@@ -134,6 +135,18 @@ class WebhookHandler:
         message_type = event_data.get("message", {}).get("type")
         print(f"Handling webhook event type: {message_type}")
         print(f"Full event data: {json.dumps(event_data, indent=2)[:500]}...")
+        
+        # Extract lead_uuid for tracing (do this early)
+        try:
+            call_metadata = event_data.get("call", {}).get("metadata", {})
+            if not call_metadata:
+                call_metadata = event_data.get("message", {}).get("call", {}).get("metadata", {})
+            lead_uuid = call_metadata.get("lead_uuid") or call_metadata.get("lead_id")
+        except Exception:
+            lead_uuid = "unknown"
+        
+        # Create LangFuse span for this webhook event
+        webhook_span = trace_webhook_event(message_type, lead_uuid, event_data)
         
         message = event_data.get("message", {})
         
@@ -341,12 +354,33 @@ class WebhookHandler:
                     "call_status": "completed"
                 }
             )
-            # Attempt to fetch transcript if possible
+            
+            # Get lead_uuid for LangFuse tracing
+            try:
+                worksheet = self.sheets_manager.sheet.worksheet("Leads")
+                headers = worksheet.row_values(1)
+                row_data = worksheet.row_values(lead_row + 2)
+                lead = dict(zip(headers, row_data))
+                lead_uuid_for_trace = lead.get('lead_uuid', 'unknown')
+            except Exception:
+                lead_uuid_for_trace = 'unknown'
+            
+            # Attempt to fetch transcript and log to LangFuse
             try:
                 call_info = message.get("call", {})
                 call_id = (call_info or {}).get("id")
                 if not call_id:
                     call_id = (analysis or {}).get("callId")
+                
+                # Log analysis to LangFuse
+                log_call_analysis(
+                    lead_uuid=lead_uuid_for_trace,
+                    summary=summary,
+                    success_status=success_status,
+                    structured_data=json.loads(structured_data) if isinstance(structured_data, str) else structured_data,
+                    call_id=call_id
+                )
+                
                 if call_id and self.vapi_client is not None:
                     t = self.vapi_client.get_transcription(call_id)
                     transcript_text = ''
@@ -357,6 +391,14 @@ class WebhookHandler:
                             transcript_text = ' '.join([s.get('text','') for s in t['segments']])
                     if transcript_text:
                         self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
+                        # Log transcript to LangFuse
+                        log_conversation_message(
+                            lead_uuid=lead_uuid_for_trace,
+                            channel='call',
+                            direction='transcript',
+                            content=transcript_text[:500],
+                            metadata={"call_id": call_id, "length": len(transcript_text)}
+                        )
             except Exception as te:
                 print(f"Transcript fetch/store skipped: {te}")
             # Send WhatsApp follow-up if configured

@@ -9,6 +9,7 @@ from typing import TypedDict, List, Literal, Annotated
 from datetime import datetime
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from src.observability import trace_workflow_node, log_conversation_message
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class LeadState(TypedDict):
     next_action: str  # call, retry, whatsapp_fallback, email_fallback, complete
 
 
+@trace_workflow_node("initiate_call")
 def initiate_call_node(state: LeadState) -> dict:
     """
     Node: Initiate outbound call via Vapi.
@@ -145,6 +147,7 @@ def check_retry_node(state: LeadState) -> Literal["retry", "fallback", "complete
     return "fallback"
 
 
+@trace_workflow_node("increment_retry")
 def increment_retry_node(state: LeadState) -> dict:
     """
     Node: Increment retry count and schedule next retry.
@@ -189,6 +192,7 @@ def increment_retry_node(state: LeadState) -> dict:
     }
 
 
+@trace_workflow_node("whatsapp_fallback")
 def whatsapp_fallback_node(state: LeadState) -> dict:
     """
     Node: Send WhatsApp fallback message after max call retries.
@@ -224,6 +228,15 @@ def whatsapp_fallback_node(state: LeadState) -> dict:
         if "error" not in result:
             logger.info(f"[Workflow] WhatsApp fallback sent successfully")
             
+            # Log to LangFuse
+            log_conversation_message(
+                lead_uuid=state["lead_uuid"],
+                channel='whatsapp',
+                direction='out',
+                content=f"Sent template: {template}",
+                metadata={"template": template, "language": os.getenv('WHATSAPP_LANGUAGE', 'en')}
+            )
+            
             # Update Sheets
             try:
                 from src.sheets_manager import SheetsManager
@@ -257,6 +270,7 @@ def whatsapp_fallback_node(state: LeadState) -> dict:
         return {"next_action": "email_fallback"}
 
 
+@trace_workflow_node("email_fallback")
 def email_fallback_node(state: LeadState) -> dict:
     """
     Node: Send email fallback after WhatsApp attempt.
@@ -287,6 +301,15 @@ def email_fallback_node(state: LeadState) -> dict:
         
         if "error" not in result:
             logger.info(f"[Workflow] Email fallback sent successfully")
+            
+            # Log to LangFuse
+            log_conversation_message(
+                lead_uuid=state["lead_uuid"],
+                channel='email',
+                direction='out',
+                content=body[:200],  # First 200 chars
+                metadata={"subject": subject, "to": state["lead_email"]}
+            )
             
             # Update Sheets
             try:
