@@ -969,5 +969,60 @@ def health_check():
     """Simple health check endpoint."""
     return jsonify({"status": "healthy"})
 
+@app.route('/api/jobs', methods=['GET'])
+def get_job_status():
+    """Get status of background jobs."""
+    try:
+        from src.scheduler import get_scheduler
+        scheduler = get_scheduler()
+        
+        if not scheduler or not scheduler.running:
+            return jsonify({"error": "Scheduler not running"}), 503
+        
+        jobs = []
+        for job in scheduler.get_jobs():
+            jobs.append({
+                "id": job.id,
+                "name": job.name,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                "trigger": str(job.trigger),
+                "pending": job.pending
+            })
+        
+        return jsonify({
+            "scheduler_running": scheduler.running,
+            "jobs": jobs,
+            "job_count": len(jobs)
+        })
+    except Exception as e:
+        logger.error(f"Error getting job status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/jobs/<job_id>/trigger', methods=['POST'])
+def trigger_job_manually(job_id):
+    """Manually trigger a specific job (for testing)."""
+    try:
+        from src.scheduler import get_scheduler
+        scheduler = get_scheduler()
+        
+        if not scheduler or not scheduler.running:
+            return jsonify({"error": "Scheduler not running"}), 503
+        
+        job = scheduler.get_job(job_id)
+        if not job:
+            return jsonify({"error": f"Job '{job_id}' not found"}), 404
+        
+        # Trigger the job immediately
+        job.modify(next_run_time=datetime.now())
+        
+        return jsonify({
+            "success": True,
+            "message": f"Job '{job_id}' triggered successfully",
+            "job_id": job_id
+        })
+    except Exception as e:
+        logger.error(f"Error triggering job: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5000')), debug=False)
