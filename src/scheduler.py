@@ -7,9 +7,10 @@ import os
 import logging
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
+from src.utils import get_ist_timestamp, get_ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +20,14 @@ _scheduler = None
 
 def create_scheduler():
     """
-    Create and configure the APScheduler instance.
+    Create and configure the APScheduler instance with persistent storage.
     
     Returns:
         BackgroundScheduler: Configured scheduler instance
     """
+    # Use SQLite for persistent job storage (survives server restarts)
     jobstores = {
-        'default': MemoryJobStore()
+        'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')
     }
     
     executors = {
@@ -337,7 +339,7 @@ def start_background_jobs(scheduler=None):
         id='call_orchestrator',
         name='Call Orchestration Job',
         replace_existing=True,
-        next_run_time=datetime.now()  # Run immediately on startup
+        next_run_time=get_ist_now()  # Run immediately on startup
     )
     logger.info(f"✅ Scheduled call orchestrator (every {orchestrator_interval}s)")
     
@@ -374,6 +376,329 @@ def start_background_jobs(scheduler=None):
         logger.info("🚀 Background scheduler started successfully")
     
     return scheduler
+
+
+def schedule_one_time_callback(lead_uuid: str, callback_time: datetime):
+    """
+    Schedule a one-time callback for a lead.
+    
+    Args:
+        lead_uuid: Lead UUID to call back
+        callback_time: When to make the callback
+    """
+    try:
+        scheduler = get_scheduler()
+        
+        # Create unique job ID
+        job_id = f"callback_{lead_uuid}_{callback_time.timestamp()}"
+        
+        # Add one-time job
+        scheduler.add_job(
+            func=trigger_callback_call,
+            trigger='date',
+            run_date=callback_time,
+            args=[lead_uuid],
+            id=job_id,
+            replace_existing=True  # If rescheduled, replace previous
+        )
+        
+        logger.info(f"✅ Scheduled callback for {lead_uuid} at {callback_time} (job_id: {job_id})")
+        
+    except Exception as e:
+        logger.error(f"Failed to schedule callback for {lead_uuid}: {e}")
+
+
+def trigger_callback_call(lead_uuid: str):
+    """
+    Execute a scheduled callback.
+    
+    Args:
+        lead_uuid: Lead UUID to call
+    """
+    try:
+        logger.info(f"[Callback] Triggering callback for {lead_uuid}")
+        
+        from src.sheets_manager import SheetsManager
+        from src.vapi_client import VapiClient
+        
+        # Initialize clients
+        sheets_manager = SheetsManager()
+        vapi_api_key = os.getenv('VAPI_API_KEY')
+        vapi_client = VapiClient(vapi_api_key) if vapi_api_key else None
+        
+        if not vapi_client:
+            logger.error("[Callback] VAPI_API_KEY not configured")
+            return
+        
+        # Find lead by UUID
+        lead_row = sheets_manager.find_row_by_lead_uuid(lead_uuid)
+        if lead_row is None:
+            logger.error(f"[Callback] Lead not found: {lead_uuid}")
+            return
+        
+        # Get lead data
+        worksheet = sheets_manager.sheet.worksheet("Leads")
+        headers = worksheet.row_values(1)
+        row_data = worksheet.row_values(lead_row + 2)
+        lead = dict(zip(headers, row_data))
+        
+        # Update status to "callback_in_progress"
+        sheets_manager.update_lead_fields(lead_row, {
+            "call_status": "callback_in_progress"
+        })
+        
+        # Initiate call
+        assistant_id = os.getenv('VAPI_ASSISTANT_ID')
+        phone_number_id = os.getenv('VAPI_PHONE_NUMBER_ID')
+        
+        result = vapi_client.initiate_outbound_call(
+            lead_data=lead,
+            assistant_id=assistant_id,
+            phone_number_id=phone_number_id
+        )
+        
+        if result.get('error'):
+            logger.error(f"[Callback] Failed to initiate call for {lead_uuid}: {result.get('error')}")
+            sheets_manager.update_lead_fields(lead_row, {
+                "call_status": "callback_failed"
+            })
+        else:
+            logger.info(f"[Callback] Successfully initiated callback for {lead_uuid}")
+            sheets_manager.update_lead_fields(lead_row, {
+                "call_status": "callback_initiated",
+                "vapi_call_id": result.get('id', '')
+            })
+        
+    except Exception as e:
+        logger.error(f"[Callback] Error executing callback for {lead_uuid}: {e}")
+
+
+def schedule_bulk_calls(lead_uuids: list, start_time: datetime, parallel_calls: int = 5, call_interval: int = 60):
+    """
+    Schedule bulk calls to multiple leads with parallel execution.
+    
+    Args:
+        lead_uuids: List of lead UUIDs to call
+        start_time: When to start calling (datetime in IST)
+        parallel_calls: How many calls to make simultaneously (default: 5)
+        call_interval: Seconds between batches (default: 60)
+        
+    Returns:
+        dict: Scheduling result with batch info
+    """
+    try:
+        from datetime import timedelta
+        scheduler = get_scheduler()
+        
+        if not lead_uuids:
+            return {"error": "No leads provided"}
+        
+        # Validate against Vapi concurrent call limit
+        vapi_limit = int(os.getenv('VAPI_CONCURRENT_LIMIT', '5'))
+        if parallel_calls > vapi_limit:
+            return {
+                "error": f"Parallel calls ({parallel_calls}) exceeds your Vapi plan limit ({vapi_limit}). Please reduce to {vapi_limit} or lower.",
+                "vapi_limit": vapi_limit,
+                "requested": parallel_calls
+            }
+        
+        # Split leads into batches
+        batches = [lead_uuids[i:i+parallel_calls] for i in range(0, len(lead_uuids), parallel_calls)]
+        
+        logger.info(f"[BulkSchedule] Scheduling {len(lead_uuids)} leads in {len(batches)} batches")
+        
+        job_ids = []
+        
+        # Schedule each batch
+        for batch_idx, batch in enumerate(batches):
+            # Calculate trigger time for this batch
+            batch_start = start_time + timedelta(seconds=batch_idx * call_interval)
+            
+            # Create unique job ID
+            job_id = f"bulk_call_batch_{batch_idx}_{int(start_time.timestamp())}"
+            
+            # Schedule the batch
+            scheduler.add_job(
+                func=execute_call_batch,
+                trigger='date',
+                run_date=batch_start,
+                args=[batch],
+                id=job_id,
+                replace_existing=True
+            )
+            
+            job_ids.append(job_id)
+            logger.info(f"✅ Scheduled batch {batch_idx+1}/{len(batches)} at {batch_start} ({len(batch)} leads)")
+        
+        # Calculate estimated completion time
+        estimated_completion = start_time + timedelta(seconds=(len(batches) - 1) * call_interval + 180)  # +3min avg call
+        
+        return {
+            "success": True,
+            "scheduled_count": len(lead_uuids),
+            "batch_count": len(batches),
+            "parallel_calls": parallel_calls,
+            "call_interval": call_interval,
+            "start_time": start_time.isoformat(),
+            "estimated_completion": estimated_completion.isoformat(),
+            "job_ids": job_ids
+        }
+        
+    except Exception as e:
+        logger.error(f"[BulkSchedule] Failed to schedule bulk calls: {e}")
+        return {"error": str(e)}
+
+
+def execute_call_batch(lead_uuids: list):
+    """
+    Execute calls for a batch of leads in parallel using threads.
+    
+    Args:
+        lead_uuids: List of lead UUIDs to call in this batch
+    """
+    import threading
+    
+    logger.info(f"[BulkCall] Executing batch of {len(lead_uuids)} calls in parallel")
+    
+    threads = []
+    for lead_uuid in lead_uuids:
+        thread = threading.Thread(target=call_single_lead_bulk, args=(lead_uuid,))
+        thread.daemon = True
+        thread.start()
+        threads.append(thread)
+    
+    # Wait for all calls in this batch to initiate (with timeout)
+    for thread in threads:
+        thread.join(timeout=30)  # 30 second timeout per call initiation
+    
+    logger.info(f"✅ [BulkCall] Batch complete - {len(lead_uuids)} calls initiated")
+
+
+def call_single_lead_bulk(lead_uuid: str):
+    """
+    Execute a single call for bulk calling.
+    
+    Args:
+        lead_uuid: Lead UUID to call
+    """
+    try:
+        logger.info(f"[BulkCall] Initiating call for {lead_uuid}")
+        
+        from src.sheets_manager import SheetsManager
+        from src.vapi_client import VapiClient
+        from src.utils import get_ist_timestamp
+        
+        # Initialize clients
+        sheets_manager = SheetsManager()
+        vapi_api_key = os.getenv('VAPI_API_KEY')
+        vapi_client = VapiClient(vapi_api_key) if vapi_api_key else None
+        
+        if not vapi_client:
+            logger.error("[BulkCall] VAPI_API_KEY not configured")
+            return
+        
+        # Find lead by UUID
+        lead_row = sheets_manager.find_row_by_lead_uuid(lead_uuid)
+        if lead_row is None:
+            logger.error(f"[BulkCall] Lead not found: {lead_uuid}")
+            return
+        
+        # Get lead data
+        worksheet = sheets_manager.sheet.worksheet("Leads")
+        headers = worksheet.row_values(1)
+        row_data = worksheet.row_values(lead_row + 2)
+        lead = dict(zip(headers, row_data))
+        
+        # Update status to bulk_calling
+        sheets_manager.update_lead_fields(lead_row, {
+            "call_status": "bulk_calling"
+        })
+        
+        # Initiate call
+        assistant_id = os.getenv('VAPI_ASSISTANT_ID')
+        phone_number_id = os.getenv('VAPI_PHONE_NUMBER_ID')
+        
+        result = vapi_client.initiate_outbound_call(
+            lead_data=lead,
+            assistant_id=assistant_id,
+            phone_number_id=phone_number_id
+        )
+        
+        if result.get('error'):
+            logger.error(f"[BulkCall] Failed for {lead_uuid}: {result.get('error')}")
+            sheets_manager.update_lead_fields(lead_row, {
+                "call_status": "failed",
+                "last_ended_reason": result.get('error'),
+                "last_call_time": get_ist_timestamp()
+            })
+        else:
+            logger.info(f"✅ [BulkCall] Initiated for {lead_uuid}")
+            sheets_manager.update_lead_fields(lead_row, {
+                "call_status": "initiated",
+                "vapi_call_id": result.get('id', ''),
+                "last_call_time": get_ist_timestamp()
+            })
+    
+    except Exception as e:
+        logger.error(f"[BulkCall] Error calling {lead_uuid}: {e}")
+
+
+def cancel_bulk_schedule(job_id_prefix: str):
+    """
+    Cancel all scheduled bulk call jobs matching a prefix.
+    
+    Args:
+        job_id_prefix: Prefix of job IDs to cancel (e.g., "bulk_call_batch_")
+        
+    Returns:
+        dict: Cancellation result
+    """
+    try:
+        scheduler = get_scheduler()
+        jobs = scheduler.get_jobs()
+        
+        cancelled_count = 0
+        for job in jobs:
+            if job.id.startswith(job_id_prefix):
+                scheduler.remove_job(job.id)
+                cancelled_count += 1
+                logger.info(f"Cancelled job: {job.id}")
+        
+        return {
+            "success": True,
+            "cancelled_count": cancelled_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to cancel bulk schedule: {e}")
+        return {"error": str(e)}
+
+
+def get_scheduled_bulk_calls():
+    """
+    Get all scheduled bulk call jobs.
+    
+    Returns:
+        list: List of scheduled bulk call jobs
+    """
+    try:
+        scheduler = get_scheduler()
+        jobs = scheduler.get_jobs()
+        
+        bulk_jobs = []
+        for job in jobs:
+            if job.id.startswith('bulk_call_batch_'):
+                bulk_jobs.append({
+                    "job_id": job.id,
+                    "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+                    "lead_count": len(job.args[0]) if job.args else 0
+                })
+        
+        return bulk_jobs
+        
+    except Exception as e:
+        logger.error(f"Failed to get scheduled bulk calls: {e}")
+        return []
 
 
 def shutdown_scheduler():

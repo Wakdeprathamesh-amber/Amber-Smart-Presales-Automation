@@ -39,6 +39,12 @@ venv.bak/
 logs/
 *.log
 
+# Database files
+*.sqlite
+*.db
+!ehthumbs.db
+!Thumbs.db
+
 # Credentials and Secrets
 config/*.json
 !config/config.example.env

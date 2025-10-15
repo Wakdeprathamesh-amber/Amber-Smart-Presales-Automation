@@ -1,13 +1,15 @@
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from src.sheets_manager import SheetsManager
 from src.retry_manager import RetryManager
 from typing import Optional
 import os
+import re
 from src.email_client import EmailClient
 from src.vapi_client import VapiClient
 from src.observability import trace_webhook_event, log_call_analysis, log_conversation_message
+from src.utils import get_ist_timestamp, parse_ist_timestamp, get_ist_now, add_hours_ist
 
 class WebhookHandler:
     def __init__(self, sheets_manager, retry_manager, whatsapp_client: Optional[object] = None,
@@ -92,7 +94,7 @@ class WebhookHandler:
                     lead_uuid=lead_uuid,
                     channel='email',
                     direction='out',
-                    timestamp=datetime.now().isoformat(),
+                    timestamp=get_ist_timestamp(),
                     subject=tagged_subject,
                     content=body_text,
                     summary='',
@@ -315,7 +317,7 @@ class WebhookHandler:
     
     def _handle_call_report(self, lead_row, message):
         """
-        Handle an end-of-call report event.
+        Handle an end-of-call report event with full tracking and validation.
         
         Args:
             lead_row (int): Row index of the lead
@@ -324,96 +326,144 @@ class WebhookHandler:
         Returns:
             dict: Result of handling the event
         """
-        print(f"Processing end-of-call report for lead_row {lead_row}")
+        print(f"[CallReport] Processing end-of-call report for lead_row {lead_row}")
         
         # Extract AI analysis data
         analysis = message.get("analysis", {})
+        call_info = message.get("call", {})
         
         # Extract summary
         summary = analysis.get("summary", "")
-        print(f"Summary: {summary[:100]}...")
+        print(f"[CallReport] Summary: {summary[:100]}...")
         
         # Extract qualification status
         success_status = analysis.get("successEvaluation", "")
-        print(f"Success Status: {success_status}")
+        print(f"[CallReport] Success Status: {success_status}")
         
         # Extract structured data
-        structured_data = json.dumps(analysis.get("structuredData", {}))
-        print(f"Structured Data: {structured_data[:100]}...")
+        structured_data_dict = analysis.get("structuredData", {})
+        structured_data = json.dumps(structured_data_dict)
+        print(f"[CallReport] Structured Data: {structured_data[:100]}...")
+        
+        # Extract call metadata
+        call_id = call_info.get("id") or analysis.get("callId")
+        call_duration = call_info.get("duration")  # Duration in seconds
+        recording_url = message.get("artifact", {}).get("recordingUrl")
+        ended_reason = call_info.get("endedReason", "")
+        
+        print(f"[CallReport] Call ID: {call_id}, Duration: {call_duration}s, Recording: {recording_url is not None}")
+        
+        # Parse structured data fields for easier dashboard filtering
+        country = structured_data_dict.get("country", "")
+        university = structured_data_dict.get("university", "")
+        course = structured_data_dict.get("course", "")
+        intake = structured_data_dict.get("intake", "")
+        visa_status = structured_data_dict.get("visa_status", "")
+        budget = structured_data_dict.get("budget", "")
+        housing_type = structured_data_dict.get("housing_type", "")
         
         try:
-            # Update the sheet with the AI analysis and mark completed in a single write
-            print(f"Updating sheet with AI analysis for lead at row {lead_row}")
+            # Prepare comprehensive update with all tracking fields
+            analysis_timestamp = get_ist_timestamp()
+            update_fields = {
+                # Core analysis
+                "summary": summary,
+                "success_status": success_status,
+                "structured_data": structured_data,
+                "analysis_received_at": analysis_timestamp,
+                "call_status": "completed",
+                
+                # Call tracking
+                "call_duration": str(call_duration) if call_duration else "",
+                "recording_url": recording_url or "",
+                "last_ended_reason": ended_reason,
+                
+                # Parsed analysis fields (for dashboard filtering)
+                "country": country,
+                "university": university,
+                "course": course,
+                "intake": intake,
+                "visa_status": visa_status,
+                "budget": budget,
+                "housing_type": housing_type
+            }
+            
+            # Update the sheet with the AI analysis in a single batched write
+            print(f"[CallReport] Updating sheet with {len(update_fields)} fields for lead at row {lead_row}")
             self._with_retry(
                 self.sheets_manager.update_lead_fields,
                 lead_row,
-                {
-                    "summary": summary,
-                    "success_status": success_status,
-                    "structured_data": structured_data,
-                    "call_status": "completed"
-                }
+                update_fields
             )
-            
-            # Get lead_uuid for LangFuse tracing
-            try:
-                worksheet = self.sheets_manager.sheet.worksheet("Leads")
-                headers = worksheet.row_values(1)
-                row_data = worksheet.row_values(lead_row + 2)
-                lead = dict(zip(headers, row_data))
-                lead_uuid_for_trace = lead.get('lead_uuid', 'unknown')
-            except Exception:
-                lead_uuid_for_trace = 'unknown'
-            
-            # Attempt to fetch transcript and log to LangFuse
-            try:
-                call_info = message.get("call", {})
-                call_id = (call_info or {}).get("id")
-                if not call_id:
-                    call_id = (analysis or {}).get("callId")
+            print(f"✅ [CallReport] Analysis saved successfully for lead_row {lead_row}")
+        except Exception as update_error:
+            print(f"❌ [CallReport] Failed to save analysis for lead_row {lead_row}: {update_error}")
+            # Don't fail the entire webhook, just log the error
+            return {"error": f"Failed to update AI analysis: {str(update_error)}"}
+        
+        # Get lead_uuid for LangFuse tracing
+        try:
+            worksheet = self.sheets_manager.sheet.worksheet("Leads")
+            headers = worksheet.row_values(1)
+            row_data = worksheet.row_values(lead_row + 2)
+            lead = dict(zip(headers, row_data))
+            lead_uuid_for_trace = lead.get('lead_uuid', 'unknown')
+        except Exception:
+            lead_uuid_for_trace = 'unknown'
+        
+        # Attempt to fetch transcript and log everything to LangFuse
+        transcript_text = ''
+        try:
+            # call_id already extracted above
+            if call_id and self.vapi_client is not None:
+                t = self.vapi_client.get_transcription(call_id)
+                if isinstance(t, dict):
+                    transcript_text = t.get('transcript') or t.get('text') or ''
+                    # Some APIs return array of segments
+                    if not transcript_text and isinstance(t.get('segments'), list):
+                        transcript_text = ' '.join([s.get('text','') for s in t['segments']])
                 
-                # Log analysis to LangFuse
-                log_call_analysis(
-                    lead_uuid=lead_uuid_for_trace,
-                    summary=summary,
-                    success_status=success_status,
-                    structured_data=json.loads(structured_data) if isinstance(structured_data, str) else structured_data,
-                    call_id=call_id
-                )
-                
-                if call_id and self.vapi_client is not None:
-                    t = self.vapi_client.get_transcription(call_id)
-                    transcript_text = ''
-                    if isinstance(t, dict):
-                        transcript_text = t.get('transcript') or t.get('text') or ''
-                        # Some APIs return array of segments
-                        if not transcript_text and isinstance(t.get('segments'), list):
-                            transcript_text = ' '.join([s.get('text','') for s in t['segments']])
-                    if transcript_text:
-                        self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
-                        # Log transcript to LangFuse
-                        log_conversation_message(
-                            lead_uuid=lead_uuid_for_trace,
-                            channel='call',
-                            direction='transcript',
-                            content=transcript_text[:500],
-                            metadata={"call_id": call_id, "length": len(transcript_text)}
-                        )
-            except Exception as te:
-                print(f"Transcript fetch/store skipped: {te}")
-            # Send WhatsApp follow-up if configured
-            self._maybe_send_whatsapp_followup(lead_row, message)
-            print(f"Sheet updated successfully for lead at row {lead_row}")
-            
-            return {
-                "status": "success", 
-                "action": "call_analysis_processed",
-                "lead_row": lead_row,
-                "success_status": success_status
-            }
-        except Exception as e:
-            print(f"Error updating AI analysis: {e}")
-            return {"error": f"Failed to update AI analysis: {str(e)}"}
+                if transcript_text:
+                    # Store transcript in sheet
+                    self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
+                    print(f"[CallReport] Transcript stored ({len(transcript_text)} chars)")
+        except Exception as te:
+            print(f"[CallReport] Transcript fetch/store skipped: {te}")
+        
+        # Log complete analysis to LangFuse with all details
+        try:
+            log_call_analysis(
+                lead_uuid=lead_uuid_for_trace,
+                summary=summary,
+                success_status=success_status,
+                structured_data=json.loads(structured_data) if isinstance(structured_data, str) else structured_data,
+                call_id=call_id,
+                transcript=transcript_text,
+                call_duration=call_duration,
+                recording_url=recording_url
+            )
+            print(f"[CallReport] Analysis logged to LangFuse")
+        except Exception as lf_error:
+            print(f"[CallReport] LangFuse logging failed: {lf_error}")
+        
+        # Check for callback request in summary or structured data
+        try:
+            callback_time = self._extract_callback_request(summary, structured_data, lead_uuid_for_trace)
+            if callback_time:
+                self._schedule_callback(lead_uuid_for_trace, lead_row, callback_time)
+        except Exception as ce:
+            print(f"Callback scheduling failed: {ce}")
+        
+        # Send WhatsApp follow-up if configured
+        self._maybe_send_whatsapp_followup(lead_row, message)
+        print(f"✅ [CallReport] Sheet updated successfully for lead at row {lead_row}")
+        
+        return {
+            "status": "success", 
+            "action": "call_analysis_processed",
+            "lead_row": lead_row,
+            "success_status": success_status
+        }
 
     def _maybe_send_whatsapp_followup(self, lead_row: int, message: dict):
         """Send WhatsApp follow-up after a successful call if config present."""
@@ -447,7 +497,7 @@ class WebhookHandler:
                     lead_uuid=lead_uuid,
                     channel='whatsapp',
                     direction='out',
-                    timestamp=datetime.now().isoformat(),
+                    timestamp=get_ist_timestamp(),
                     subject=self.whatsapp_followup_template or 'whatsapp_followup',
                     content=f"Sent WhatsApp template {self.whatsapp_followup_template}",
                     summary='',
@@ -488,7 +538,7 @@ class WebhookHandler:
                     lead_uuid=lead_uuid,
                     channel='whatsapp',
                     direction='out',
-                    timestamp=datetime.now().isoformat(),
+                    timestamp=get_ist_timestamp(),
                     subject=self.whatsapp_fallback_template or 'whatsapp_fallback',
                     content=f"Sent WhatsApp template {self.whatsapp_fallback_template}",
                     summary='',
@@ -500,3 +550,154 @@ class WebhookHandler:
                 pass
         except Exception:
             pass
+    
+    def _extract_callback_request(self, summary: str, structured_data_json: str, lead_uuid: str) -> Optional[datetime]:
+        """
+        Extract callback request from call summary or structured data.
+        
+        Args:
+            summary: Call summary text
+            structured_data_json: JSON string of structured data
+            lead_uuid: Lead UUID for logging
+            
+        Returns:
+            datetime object if callback requested, None otherwise
+        """
+        # Check for callback keywords
+        callback_keywords = [
+            "call back", "callback", "call me back", "call later", 
+            "call tomorrow", "call at", "reach out later"
+        ]
+        
+        summary_lower = summary.lower()
+        has_callback_request = any(keyword in summary_lower for keyword in callback_keywords)
+        
+        if not has_callback_request:
+            return None
+        
+        print(f"[Callback] Detected callback request for {lead_uuid}")
+        
+        # Try to extract time from structured data first
+        try:
+            structured_data = json.loads(structured_data_json) if isinstance(structured_data_json, str) else structured_data_json
+            callback_info = structured_data.get('callback_time') or structured_data.get('preferred_contact_time')
+            if callback_info:
+                parsed_time = self._parse_callback_time(callback_info)
+                if parsed_time:
+                    print(f"[Callback] Extracted from structured data: {parsed_time}")
+                    return parsed_time
+        except Exception as e:
+            print(f"[Callback] Could not parse structured data: {e}")
+        
+        # Fall back to extracting from summary text
+        parsed_time = self._parse_callback_time(summary)
+        if parsed_time:
+            print(f"[Callback] Extracted from summary: {parsed_time}")
+            return parsed_time
+        
+        # Default: schedule for 24 hours from now if no specific time found
+        default_time = add_hours_ist(24)
+        print(f"[Callback] Using default time (24h from now): {default_time}")
+        return default_time
+    
+    def _parse_callback_time(self, text: str) -> Optional[datetime]:
+        """
+        Parse callback time from natural language text.
+        
+        Args:
+            text: Text containing time reference
+            
+        Returns:
+            datetime object or None
+        """
+        text_lower = text.lower()
+        now = get_ist_now()
+        
+        # Pattern: "tomorrow at 5 PM", "tomorrow 5pm", "tomorrow at 17:00"
+        tomorrow_match = re.search(r'tomorrow\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text_lower)
+        if tomorrow_match:
+            hour = int(tomorrow_match.group(1))
+            minute = int(tomorrow_match.group(2)) if tomorrow_match.group(2) else 0
+            period = tomorrow_match.group(3)
+            
+            if period == 'pm' and hour < 12:
+                hour += 12
+            elif period == 'am' and hour == 12:
+                hour = 0
+            
+            tomorrow = now + timedelta(days=1)
+            return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        
+        # Pattern: "at 5 PM today", "at 17:00", "5pm today"
+        today_match = re.search(r'(?:today\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)', text_lower)
+        if today_match:
+            hour = int(today_match.group(1))
+            minute = int(today_match.group(2)) if today_match.group(2) else 0
+            period = today_match.group(3)
+            
+            if period == 'pm' and hour < 12:
+                hour += 12
+            elif period == 'am' and hour == 12:
+                hour = 0
+            
+            callback_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # If time has already passed today, schedule for tomorrow
+            if callback_time < now:
+                callback_time += timedelta(days=1)
+            return callback_time
+        
+        # Pattern: "in 2 hours", "in 30 minutes"
+        relative_match = re.search(r'in\s+(\d+)\s+(hour|minute)s?', text_lower)
+        if relative_match:
+            amount = int(relative_match.group(1))
+            unit = relative_match.group(2)
+            if unit == 'hour':
+                return now + timedelta(hours=amount)
+            elif unit == 'minute':
+                return now + timedelta(minutes=amount)
+        
+        # Pattern: "Monday", "Tuesday", etc. (next occurrence)
+        days_of_week = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+        for i, day in enumerate(days_of_week):
+            if day in text_lower:
+                current_weekday = now.weekday()
+                target_weekday = i
+                days_ahead = (target_weekday - current_weekday) % 7
+                if days_ahead == 0:  # Same day, schedule for next week
+                    days_ahead = 7
+                target_date = now + timedelta(days=days_ahead)
+                # Default to 10 AM if no time specified
+                return target_date.replace(hour=10, minute=0, second=0, microsecond=0)
+        
+        return None
+    
+    def _schedule_callback(self, lead_uuid: str, lead_row: int, callback_time: datetime):
+        """
+        Schedule a callback for the lead.
+        
+        Args:
+            lead_uuid: Lead UUID
+            lead_row: Lead row index
+            callback_time: When to call back
+        """
+        try:
+            from src.scheduler import schedule_one_time_callback
+            
+            # Update sheet with callback time
+            self._with_retry(
+                self.sheets_manager.update_lead_fields,
+                lead_row,
+                {
+                    "callback_requested": "true",
+                    "callback_time": callback_time.isoformat(),
+                    "call_status": "callback_scheduled"
+                }
+            )
+            
+            # Schedule the callback job
+            schedule_one_time_callback(lead_uuid, callback_time)
+            
+            print(f"[Callback] Scheduled callback for {lead_uuid} at {callback_time}")
+            
+        except Exception as e:
+            print(f"[Callback] Failed to schedule callback: {e}")

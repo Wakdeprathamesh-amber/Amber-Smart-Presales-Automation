@@ -10,6 +10,7 @@ from datetime import datetime
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from src.observability import trace_workflow_node, log_conversation_message
+from src.utils import get_ist_timestamp, get_ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def initiate_call_node(state: LeadState) -> dict:
                 sheets_manager.update_lead_call_initiated(
                     row_index,
                     "initiated",
-                    datetime.now().isoformat(),
+                    get_ist_timestamp(),
                     result.get('id')
                 )
         except Exception as e:
@@ -108,7 +109,7 @@ def initiate_call_node(state: LeadState) -> dict:
             "last_channel": "call",
             "channels_tried": state["channels_tried"] + ["call"] if "call" not in state["channels_tried"] else state["channels_tried"],
             "conversation_history": state["conversation_history"] + [{
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": get_ist_timestamp(),
                 "channel": "call",
                 "action": "initiated",
                 "call_id": result.get('id')
@@ -254,7 +255,7 @@ def whatsapp_fallback_node(state: LeadState) -> dict:
                 "channels_tried": state["channels_tried"] + ["whatsapp"] if "whatsapp" not in state["channels_tried"] else state["channels_tried"],
                 "last_channel": "whatsapp",
                 "conversation_history": state["conversation_history"] + [{
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": get_ist_timestamp(),
                     "channel": "whatsapp",
                     "action": "fallback_sent",
                     "template": template
@@ -328,7 +329,7 @@ def email_fallback_node(state: LeadState) -> dict:
                 "channels_tried": state["channels_tried"] + ["email"] if "email" not in state["channels_tried"] else state["channels_tried"],
                 "last_channel": "email",
                 "conversation_history": state["conversation_history"] + [{
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": get_ist_timestamp(),
                     "channel": "email",
                     "action": "fallback_sent",
                     "subject": subject

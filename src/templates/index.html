@@ -28,6 +28,9 @@
           <button id="refresh-btn" class="btn btn-secondary">
             <span class="btn-icon">🔄</span> Refresh
           </button>
+          <button id="schedule-bulk-btn" class="btn btn-primary" style="display: none;">
+            <span class="btn-icon">📅</span> Schedule Calls (<span id="selected-count">0</span>)
+          </button>
           <button id="bulk-call-btn" class="btn btn-secondary">
             <span class="btn-icon">📞</span> Call All Eligible
           </button>
@@ -105,6 +108,7 @@
             <table>
               <thead>
                 <tr>
+                  <th><input type="checkbox" id="select-all-checkbox" title="Select All"></th>
                   <th>Name</th>
                   <th>Phone</th>
                   <th>Email</th>
@@ -118,7 +122,7 @@
               <tbody id="leads-table-body">
                 <!-- Table rows will be populated by JavaScript -->
                 <tr>
-                  <td colspan="7" class="text-center">Loading leads...</td>
+                  <td colspan="9" class="text-center">Loading leads...</td>
                 </tr>
               </tbody>
             </table>
@@ -161,6 +165,70 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
             <button type="submit" class="btn btn-primary">Add Lead</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk Schedule Modal -->
+  <div id="bulk-schedule-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">📅 Schedule Bulk Calls</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="bulk-schedule-form">
+          <div class="form-group">
+            <label class="form-label">Selected Leads: <strong><span id="modal-selected-count">0</span></strong></label>
+            <div class="form-hint">These leads will be called at the scheduled time</div>
+          </div>
+          
+          <div class="form-group">
+            <label for="schedule-date" class="form-label">Start Date</label>
+            <input type="date" id="schedule-date" name="schedule-date" class="form-control" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="schedule-time" class="form-label">Start Time (IST) 🇮🇳</label>
+            <input type="time" id="schedule-time" name="schedule-time" class="form-control" required>
+            <div class="form-hint">⏰ Indian Standard Time (IST/UTC+5:30) - All times are in India timezone</div>
+          </div>
+          
+          <div class="form-group">
+            <label for="parallel-calls" class="form-label">Parallel Calls</label>
+            <select id="parallel-calls" name="parallel-calls" class="form-control">
+              <option value="1">1 call at a time (Sequential)</option>
+              <option value="3">3 calls at a time</option>
+              <option value="5" selected>5 calls at a time (Recommended)</option>
+              <option value="10">10 calls at a time</option>
+            </select>
+            <div class="form-hint">How many calls to make simultaneously. Check your Vapi plan limits.</div>
+          </div>
+          
+          <div class="form-group">
+            <label for="call-interval" class="form-label">Interval Between Batches</label>
+            <select id="call-interval" name="call-interval" class="form-control">
+              <option value="30">30 seconds</option>
+              <option value="60" selected>60 seconds (Recommended)</option>
+              <option value="120">120 seconds</option>
+            </select>
+            <div class="form-hint">Time to wait before starting the next batch</div>
+          </div>
+          
+          <div class="form-group">
+            <div class="schedule-summary" style="background: #f0f9ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
+              <h4 style="margin: 0 0 10px 0; font-size: 14px;">📊 Schedule Summary</h4>
+              <div id="schedule-summary-content" style="font-size: 13px; color: #555;">
+                Select date and time to see estimated completion
+              </div>
+            </div>
+          </div>
+          
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary">Schedule Calls</button>
           </div>
         </form>
       </div>

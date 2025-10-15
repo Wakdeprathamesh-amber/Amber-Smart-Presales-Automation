@@ -8,6 +8,7 @@ import logging
 import json
 from functools import wraps
 from datetime import datetime
+from src.utils import get_ist_timestamp, get_ist_now
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -82,40 +83,62 @@ def trace_vapi_call(func):
         lead_uuid = lead_data.get('lead_uuid', 'unknown')
         lead_name = lead_data.get('name', 'Unknown')
         lead_number = lead_data.get('number', 'Unknown')
+        partner = lead_data.get('partner', 'Unknown')
         
-        # Create trace
+        # Create or update trace for this lead
         trace = langfuse.trace(
-            name="vapi_outbound_call",
+            id=lead_uuid,  # Use lead_uuid as trace ID for continuity
+            name="lead_call_journey",
             user_id=lead_uuid,
             metadata={
                 "lead_name": lead_name,
                 "lead_number": lead_number,
-                "assistant_id": kwargs.get('assistant_id') or (args[2] if len(args) > 2 else None),
-                "phone_number_id": kwargs.get('phone_number_id') or (args[3] if len(args) > 3 else None),
-                "timestamp": datetime.now().isoformat()
+                "partner": partner,
+                "timestamp": get_ist_timestamp()
             },
-            tags=["vapi", "outbound_call", "voice"]
+            tags=["vapi", "outbound_call", "voice", "call_initiation"]
         )
         
         try:
             # Execute the actual function
             result = func(*args, **kwargs)
             
-            # Log success or error
+            # Add span for call initiation
             if "error" in result:
-                trace.update(
+                trace.span(
+                    name="call_initiation",
+                    input={
+                        "lead_uuid": lead_uuid,
+                        "lead_name": lead_name,
+                        "lead_number": lead_number,
+                        "assistant_id": kwargs.get('assistant_id') or (args[2] if len(args) > 2 else None),
+                        "phone_number_id": kwargs.get('phone_number_id') or (args[3] if len(args) > 3 else None)
+                    },
                     output={"error": result.get("error")},
                     level="ERROR",
-                    status_message=f"Call initiation failed: {result.get('error')}"
+                    status_message=f"Call initiation failed: {result.get('error')}",
+                    metadata={"timestamp": get_ist_timestamp()}
                 )
             else:
-                trace.update(
+                trace.span(
+                    name="call_initiation",
+                    input={
+                        "lead_uuid": lead_uuid,
+                        "lead_name": lead_name,
+                        "lead_number": lead_number,
+                        "assistant_id": kwargs.get('assistant_id') or (args[2] if len(args) > 2 else None),
+                        "phone_number_id": kwargs.get('phone_number_id') or (args[3] if len(args) > 3 else None)
+                    },
                     output={
                         "call_id": result.get('id'),
                         "status": "initiated"
                     },
                     level="DEFAULT",
-                    status_message="Call initiated successfully"
+                    status_message="Call initiated successfully",
+                    metadata={
+                        "vapi_call_id": result.get('id'),
+                        "timestamp": get_ist_timestamp()
+                    }
                 )
             
             langfuse.flush()
@@ -123,10 +146,13 @@ def trace_vapi_call(func):
             
         except Exception as e:
             # Log exception
-            trace.update(
+            trace.span(
+                name="call_initiation",
+                input={"lead_uuid": lead_uuid},
                 output={"exception": str(e)},
                 level="ERROR",
-                status_message=f"Call initiation exception: {str(e)}"
+                status_message=f"Call initiation exception: {str(e)}",
+                metadata={"timestamp": get_ist_timestamp()}
             )
             langfuse.flush()
             raise
@@ -159,7 +185,7 @@ def trace_webhook_event(event_type: str, lead_uuid: str, event_data: Dict[str, A
             input=event_data,
             metadata={
                 "event_type": event_type,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": get_ist_timestamp()
             },
             level="DEFAULT"
         )
@@ -176,10 +202,13 @@ def log_call_analysis(
     summary: str,
     success_status: str,
     structured_data: Dict[str, Any],
-    call_id: Optional[str] = None
+    call_id: Optional[str] = None,
+    transcript: Optional[str] = None,
+    call_duration: Optional[int] = None,
+    recording_url: Optional[str] = None
 ):
     """
-    Log AI analysis results from end-of-call report.
+    Log AI analysis results from end-of-call report with full details.
     
     Args:
         lead_uuid: UUID of the lead
@@ -187,6 +216,9 @@ def log_call_analysis(
         success_status: Qualification status (qualified, unqualified, etc.)
         structured_data: Extracted structured data
         call_id: Vapi call ID
+        transcript: Full call transcript
+        call_duration: Duration in seconds
+        recording_url: URL to call recording
     """
     langfuse = get_langfuse_client()
     
@@ -194,12 +226,26 @@ def log_call_analysis(
         return
     
     try:
-        # Create generation for AI analysis
-        langfuse.generation(
+        # Get or create trace for this lead
+        trace = langfuse.trace(
+            id=lead_uuid,
+            name="lead_call_journey",
+            user_id=lead_uuid,
+            metadata={
+                "call_id": call_id,
+                "timestamp": get_ist_timestamp()
+            },
+            tags=["call", "analysis", "post_call"]
+        )
+        
+        # Add generation for AI analysis
+        trace.generation(
             name="call_analysis",
-            trace_id=lead_uuid,
-            model="vapi_assistant",  # Vapi abstracts underlying model
-            input={"call_id": call_id} if call_id else {},
+            model="vapi_assistant",
+            input={
+                "call_id": call_id,
+                "transcript_length": len(transcript) if transcript else 0
+            },
             output={
                 "summary": summary,
                 "success_status": success_status,
@@ -207,11 +253,52 @@ def log_call_analysis(
             },
             metadata={
                 "analysis_type": "post_call",
-                "timestamp": datetime.now().isoformat()
+                "call_duration": call_duration,
+                "recording_url": recording_url,
+                "timestamp": get_ist_timestamp()
             },
             level="DEFAULT",
             status_message=f"Call analyzed: {success_status}"
         )
+        
+        # Add transcript as a separate event if available
+        if transcript:
+            trace.event(
+                name="call_transcript",
+                input={"transcript": transcript[:1000]},  # First 1000 chars
+                metadata={
+                    "full_length": len(transcript),
+                    "call_id": call_id,
+                    "timestamp": get_ist_timestamp()
+                },
+                level="DEFAULT"
+            )
+        
+        # Add call metrics as scores
+        if success_status:
+            # Map success status to numeric score
+            status_scores = {
+                "qualified": 1.0,
+                "potential": 0.7,
+                "not qualified": 0.3,
+                "not_qualified": 0.3
+            }
+            score_value = status_scores.get(success_status.lower(), 0.5)
+            
+            trace.score(
+                name="lead_qualification",
+                value=score_value,
+                comment=f"Status: {success_status}"
+            )
+        
+        if call_duration:
+            # Normalize call duration to 0-1 scale (0-600 seconds = 0-1)
+            duration_score = min(call_duration / 600.0, 1.0)
+            trace.score(
+                name="call_duration",
+                value=duration_score,
+                comment=f"{call_duration} seconds"
+            )
         
         langfuse.flush()
         
@@ -249,7 +336,7 @@ def log_conversation_message(
             metadata={
                 "channel": channel,
                 "direction": direction,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": get_ist_timestamp(),
                 **(metadata or {})
             },
             level="DEBUG"
@@ -293,7 +380,7 @@ def trace_workflow_node(node_name: str):
                     },
                     metadata={
                         "node_name": node_name,
-                        "timestamp": datetime.now().isoformat()
+                        "timestamp": get_ist_timestamp()
                     },
                     level="DEFAULT"
                 )

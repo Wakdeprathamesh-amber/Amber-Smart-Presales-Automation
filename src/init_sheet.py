@@ -49,15 +49,17 @@ def initialize_sheet():
             logger.info("No existing 'Leads' worksheet found")
         
         # Create a new "Leads" worksheet
-        worksheet = sheet.add_worksheet(title="Leads", rows=1000, cols=20)
+        worksheet = sheet.add_worksheet(title="Leads", rows=1000, cols=40)
         
         # Define the header row
         headers = [
             # Lead Input Fields
+            "lead_uuid",
             "number",
             "whatsapp_number",
             "name",
             "email",
+            "partner",
             
             # System/Workflow Tracking Fields
             "call_status",
@@ -66,17 +68,41 @@ def initialize_sheet():
             "whatsapp_sent",
             "email_sent",
             
+            # Call Tracking Fields
+            "vapi_call_id",
+            "last_call_time",
+            "call_duration",
+            "recording_url",
+            "last_ended_reason",
+            
+            # Callback Fields
+            "callback_requested",
+            "callback_time",
+            
             # AI Post-Call Analysis Fields
             "summary",
             "success_status",
-            "structured_data"
+            "structured_data",
+            "analysis_received_at",
+            
+            # Parsed Analysis Data (from structured_data)
+            "country",
+            "university",
+            "course",
+            "intake",
+            "visa_status",
+            "budget",
+            "housing_type",
+            
+            # Additional Tracking
+            "transcript"
         ]
         
         # Update the header row
-        worksheet.update('A1:L1', [headers])
+        worksheet.update('A1:AK1', [headers])
         
         # Format the header row
-        worksheet.format('A1:L1', {
+        worksheet.format('A1:AK1', {
             'textFormat': {'bold': True},
             'backgroundColor': {'red': 0.8, 'green': 0.8, 'blue': 0.8}
         })

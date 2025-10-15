@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime
 from src.sheets_manager import SheetsManager
+from src.utils import get_ist_timestamp, get_ist_now
 from src.vapi_client import VapiClient
 from src.retry_manager import RetryManager
 
@@ -99,7 +100,7 @@ class CallOrchestrator:
                     print(f"Call initiated successfully for lead {lead_id}")
                     if row_index_0 is not None:
                         # record initiation with call_time and vapi_call_id
-                        call_time = datetime.now().isoformat()
+                        call_time = get_ist_timestamp()
                         self.sheets_manager.update_lead_call_initiated(row_index_0, "initiated", call_time, call_result.get('id'))
                     results["calls_initiated"] += 1
                     results["details"].append({
@@ -142,7 +143,7 @@ class CallOrchestrator:
         
         try:
             while True:
-                print(f"\n[{datetime.now().isoformat()}] Running processing cycle...")
+                print(f"\n[{get_ist_timestamp()}] Running processing cycle...")
                 results = self.run_once()
                 
                 print(f"Processed {results['total_leads_processed']} leads.")

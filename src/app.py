@@ -14,6 +14,7 @@ from src.retry_manager import RetryManager
 from src.whatsapp_client import WhatsAppClient
 from src.email_client import EmailClient
 from src.webhook_handler import WebhookHandler
+from src.utils import get_ist_timestamp, get_ist_now
 
 # Load environment variables
 load_dotenv()
@@ -41,7 +42,7 @@ email_client = None
 # Simple in-memory caches
 _leads_cache = {"data": None, "ts": 0}
 _details_cache = {}
-_CACHE_TTL_SECONDS = 15
+_CACHE_TTL_SECONDS = 60  # Increased from 15 to 60 seconds to reduce Google Sheets API calls
 
 
 def _resolve_email_settings() -> dict:
@@ -324,7 +325,7 @@ def initiate_call(lead_uuid):
             }), 500
         
         # Record call initiation time
-        call_time = datetime.now().isoformat()
+        call_time = get_ist_timestamp()
         
         # Initiate call
         call_result = get_vapi_client().initiate_outbound_call(
@@ -340,8 +341,15 @@ def initiate_call(lead_uuid):
                 "details": call_result.get("body")
             }), 500
         
-        # Update lead status and call time
-        get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
+        # Extract Vapi call ID
+        vapi_call_id = call_result.get('id', '')
+        
+        # Update lead status, call time, and call ID in one batch
+        get_sheets_manager().update_lead_fields(row_index_0, {
+            "call_status": "initiated",
+            "vapi_call_id": vapi_call_id,
+            "last_call_time": call_time
+        })
         # Increment retry_count for manual initiation, regardless of previous status
         try:
             current_retry = int(str(lead.get('retry_count') or '0'))
@@ -690,7 +698,7 @@ def bulk_call():
                 if not lead_uuid or not number:
                     errors.append({"lead_uuid": lead_uuid or '?', "error": "Missing uuid or number"})
                     continue
-                call_time = datetime.now().isoformat()
+                call_time = get_ist_timestamp()
                 result = get_vapi_client().initiate_outbound_call(
                     lead_data={"lead_uuid": lead_uuid, "number": number, "name": lead.get('name'), "email": lead.get('email')},
                     assistant_id=assistant_id,
@@ -909,7 +917,7 @@ def send_manual_email(lead_uuid):
                     row_index_0 = None
             if row_index_0 is not None:
                 get_sheets_manager().update_fallback_status(row_index_0, email_sent=True)
-            timestamp_now = datetime.now().isoformat()
+            timestamp_now = get_ist_timestamp()
             # Attempt to persist to Sheets
             try:
                 get_sheets_manager().log_conversation(
@@ -1013,7 +1021,7 @@ def trigger_job_manually(job_id):
             return jsonify({"error": f"Job '{job_id}' not found"}), 404
         
         # Trigger the job immediately
-        job.modify(next_run_time=datetime.now())
+        job.modify(next_run_time=get_ist_now())
         
         return jsonify({
             "success": True,
@@ -1022,6 +1030,93 @@ def trigger_job_manually(job_id):
         })
     except Exception as e:
         logger.error(f"Error triggering job: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/schedule-bulk-calls', methods=['POST'])
+def schedule_bulk_calls_endpoint():
+    """Schedule bulk calls to multiple leads at a specific time."""
+    try:
+        data = request.json
+        
+        # Validate input
+        lead_uuids = data.get('lead_uuids', [])
+        start_time_str = data.get('start_time')
+        parallel_calls = int(data.get('parallel_calls', 5))
+        call_interval = int(data.get('call_interval', 60))
+        
+        if not lead_uuids:
+            return jsonify({"error": "No leads selected"}), 400
+        
+        if not start_time_str:
+            return jsonify({"error": "Start time not provided"}), 400
+        
+        # Parse start time
+        from src.utils import parse_ist_timestamp, get_ist_now
+        start_time = parse_ist_timestamp(start_time_str)
+        
+        if start_time is None:
+            return jsonify({"error": "Invalid start time format"}), 400
+        
+        # Validate start time is in future
+        if start_time < get_ist_now():
+            return jsonify({"error": "Start time must be in the future"}), 400
+        
+        # Validate parallel_calls
+        if parallel_calls < 1 or parallel_calls > 20:
+            return jsonify({"error": "Parallel calls must be between 1 and 20"}), 400
+        
+        # Schedule the bulk calls
+        from src.scheduler import schedule_bulk_calls
+        result = schedule_bulk_calls(lead_uuids, start_time, parallel_calls, call_interval)
+        
+        if result.get('error'):
+            return jsonify(result), 500
+        
+        logger.info(f"✅ Scheduled bulk calls: {len(lead_uuids)} leads at {start_time}")
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"Error scheduling bulk calls: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/scheduled-bulk-calls', methods=['GET'])
+def get_scheduled_bulk_calls_endpoint():
+    """Get all scheduled bulk call jobs."""
+    try:
+        from src.scheduler import get_scheduled_bulk_calls
+        bulk_jobs = get_scheduled_bulk_calls()
+        
+        return jsonify({
+            "success": True,
+            "scheduled_batches": bulk_jobs,
+            "total_batches": len(bulk_jobs)
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting scheduled bulk calls: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/cancel-bulk-schedule', methods=['POST'])
+def cancel_bulk_schedule_endpoint():
+    """Cancel scheduled bulk call jobs."""
+    try:
+        data = request.json
+        job_id_prefix = data.get('job_id_prefix', 'bulk_call_batch_')
+        
+        from src.scheduler import cancel_bulk_schedule
+        result = cancel_bulk_schedule(job_id_prefix)
+        
+        if result.get('error'):
+            return jsonify(result), 500
+        
+        logger.info(f"✅ Cancelled bulk schedule: {result.get('cancelled_count')} jobs")
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"Error cancelling bulk schedule: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

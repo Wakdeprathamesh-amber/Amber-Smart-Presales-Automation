@@ -4,6 +4,7 @@
 const state = {
   leads: [],
   filteredLeads: [],
+  selectedLeads: new Set(),  // Track selected lead UUIDs for bulk operations
   stats: {
     totalLeads: 0,
     completed: 0,
@@ -74,6 +75,33 @@ function setupEventListeners() {
     bulkCallBtn.addEventListener('click', bulkCallEligible);
   }
   
+  // Schedule bulk calls button
+  const scheduleBulkBtn = document.getElementById('schedule-bulk-btn');
+  if (scheduleBulkBtn) {
+    scheduleBulkBtn.addEventListener('click', openBulkScheduleModal);
+  }
+  
+  // Select all checkbox
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', handleSelectAllChange);
+  }
+  
+  // Bulk schedule form
+  const bulkScheduleForm = document.getElementById('bulk-schedule-form');
+  if (bulkScheduleForm) {
+    bulkScheduleForm.addEventListener('submit', scheduleBulkCalls);
+    
+    // Update summary when inputs change
+    const scheduleInputs = ['schedule-date', 'schedule-time', 'parallel-calls', 'call-interval'];
+    scheduleInputs.forEach(id => {
+      const input = document.getElementById(id);
+      if (input) {
+        input.addEventListener('change', updateScheduleSummary);
+      }
+    });
+  }
+  
   // Add lead button
   const addLeadBtn = document.getElementById('add-lead-btn');
   if (addLeadBtn) {
@@ -108,8 +136,13 @@ function setupEventListeners() {
     });
   }
   
-  // Event delegation for dynamic buttons
+  // Event delegation for dynamic buttons and checkboxes
   document.addEventListener('click', (e) => {
+    // Lead checkbox
+    if (e.target.matches('.lead-checkbox')) {
+      handleCheckboxChange(e);
+    }
+    
     // Call button
     if (e.target.matches('.call-btn')) {
       const leadUuid = e.target.dataset.uuid;
@@ -207,6 +240,11 @@ async function deleteLead(leadUuid) {
       throw new Error(err.error || 'Failed to delete lead');
     }
     showMessage('success', 'Lead deleted');
+    
+    // Remove from selection if selected
+    state.selectedLeads.delete(leadUuid);
+    updateSelectedCount();
+    
     // Refresh list
     await fetchLeads();
   } catch (e) {
@@ -436,10 +474,43 @@ function renderLeadDetails(lead) {
             <strong>Retry Count:</strong> ${lead.retry_count || '0'}
           </div>
           <div class="detail-item">
-            <strong>Last Call:</strong> ${lead.last_call_time ? new Date(lead.last_call_time).toLocaleString() : 'N/A'}
+            <strong>Vapi Call ID:</strong> ${lead.vapi_call_id ? `<code style="font-size: 11px;">${lead.vapi_call_id}</code>` : 'N/A'}
           </div>
           <div class="detail-item">
-            <strong>Next Retry:</strong> ${lead.next_retry_time ? new Date(lead.next_retry_time).toLocaleString() : 'N/A'}
+            <strong>Last Call:</strong> ${lead.last_call_time ? new Date(lead.last_call_time).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}) + ' IST' : 'N/A'}
+          </div>
+          <div class="detail-item">
+            <strong>Next Retry:</strong> ${lead.next_retry_time ? new Date(lead.next_retry_time).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}) + ' IST' : 'N/A'}
+          </div>
+          <div class="detail-item">
+            <strong>Call Duration:</strong> ${lead.call_duration ? `${lead.call_duration} seconds (${Math.floor(lead.call_duration / 60)}:${(lead.call_duration % 60).toString().padStart(2, '0')} min)` : 'N/A'}
+          </div>
+          <div class="detail-item full-width">
+            <strong>Recording:</strong> ${lead.recording_url ? `<a href="${lead.recording_url}" target="_blank" class="btn btn-sm btn-secondary">🎧 Listen to Recording</a>` : 'Not available'}
+          </div>
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4 class="section-title">Lead Information</h4>
+        <div class="detail-grid">
+          <div class="detail-item">
+            <strong>Country:</strong> ${lead.country || 'Not captured'}
+          </div>
+          <div class="detail-item">
+            <strong>University:</strong> ${lead.university || 'Not captured'}
+          </div>
+          <div class="detail-item">
+            <strong>Course:</strong> ${lead.course || 'Not captured'}
+          </div>
+          <div class="detail-item">
+            <strong>Intake:</strong> ${lead.intake || 'Not captured'}
+          </div>
+          <div class="detail-item">
+            <strong>Visa Status:</strong> ${lead.visa_status || 'Not captured'}
+          </div>
+          <div class="detail-item">
+            <strong>Budget:</strong> ${lead.budget || 'Not captured'}
           </div>
         </div>
       </div>
@@ -451,20 +522,19 @@ function renderLeadDetails(lead) {
           <div class="summary-text">${lead.summary || 'No summary available'}</div>
         </div>
         <div class="detail-item full-width">
-          <strong>Ended Reason:</strong>
-          <div class="summary-text">${lead.last_ended_reason || 'N/A'}</div>
-        </div>
-        <div class="detail-item full-width">
           <strong>Success Status:</strong>
           ${lead.success_status ? `<span class="status-badge status-${lead.success_status.toLowerCase().replace(' ', '-')}">${lead.success_status}</span>` : 'N/A'}
         </div>
         <div class="detail-item full-width">
-          <strong>Structured Data:</strong>
+          <strong>Analysis Received:</strong> ${lead.analysis_received_at ? new Date(lead.analysis_received_at).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}) + ' IST' : 'N/A'}
+        </div>
+        <div class="detail-item full-width">
+          <strong>Structured Data (Raw):</strong>
           ${structuredDataHtml}
         </div>
         <div class="detail-item full-width">
           <strong>Transcript:</strong>
-          <div class="summary-text" style="white-space: pre-wrap;">${lead.transcript || 'Transcript not available yet'}</div>
+          <div class="summary-text" style="white-space: pre-wrap; max-height: 300px; overflow-y: auto;">${lead.transcript || 'Transcript not available yet'}</div>
         </div>
       </div>
       
@@ -964,7 +1034,7 @@ function renderLeadsTable() {
   if (state.filteredLeads.length === 0) {
     tableBody.innerHTML = `
       <tr>
-        <td colspan="8" class="text-center">No leads found</td>
+        <td colspan="9" class="text-center">No leads found</td>
       </tr>
     `;
     return;
@@ -984,8 +1054,10 @@ function renderLeadsTable() {
     // Always allow manual call retry regardless of status (disable only while initiated)
     const showCallButton = true;
     const isInitiated = lead.call_status === 'initiated';
+    const isSelected = state.selectedLeads.has(lead.lead_uuid);
     
     row.innerHTML = `
+      <td><input type="checkbox" class="lead-checkbox" data-uuid="${lead.lead_uuid}" ${isSelected ? 'checked' : ''}></td>
       <td>${lead.name || 'N/A'}</td>
       <td>${lead.number || 'N/A'}</td>
       <td>${lead.email || 'N/A'}</td>
@@ -1099,4 +1171,216 @@ function closeAllModals() {
   // Stop details auto refresh and clear active lead
   stopDetailsAutoRefresh();
   state.currentLeadUuid = null;
+}
+
+
+// ========================================
+// BULK CALL SCHEDULING
+// ========================================
+
+function updateSelectedCount() {
+  const count = state.selectedLeads.size;
+  document.getElementById('selected-count').textContent = count;
+  document.getElementById('modal-selected-count').textContent = count;
+  
+  // Show/hide schedule button based on selection
+  const scheduleBtn = document.getElementById('schedule-bulk-btn');
+  if (scheduleBtn) {
+    scheduleBtn.style.display = count > 0 ? 'inline-block' : 'none';
+  }
+}
+
+function handleCheckboxChange(event) {
+  const checkbox = event.target;
+  const uuid = checkbox.dataset.uuid;
+  
+  if (checkbox.checked) {
+    state.selectedLeads.add(uuid);
+  } else {
+    state.selectedLeads.delete(uuid);
+  }
+  
+  updateSelectedCount();
+  updateSelectAllCheckbox();
+}
+
+function handleSelectAllChange(event) {
+  const selectAll = event.target.checked;
+  
+  if (selectAll) {
+    // Select all filtered leads
+    state.filteredLeads.forEach(lead => {
+      state.selectedLeads.add(lead.lead_uuid);
+    });
+  } else {
+    // Deselect all
+    state.selectedLeads.clear();
+  }
+  
+  updateSelectedCount();
+  renderLeadsTable();
+}
+
+function updateSelectAllCheckbox() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  if (!selectAllCheckbox) return;
+  
+  const allSelected = state.filteredLeads.length > 0 && 
+                      state.filteredLeads.every(lead => state.selectedLeads.has(lead.lead_uuid));
+  
+  selectAllCheckbox.checked = allSelected;
+}
+
+function openBulkScheduleModal() {
+  if (state.selectedLeads.size === 0) {
+    showMessage('error', 'Please select at least one lead');
+    return;
+  }
+  
+  // Set default date and time (tomorrow at 10 AM)
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(10, 0, 0, 0);
+  
+  const dateInput = document.getElementById('schedule-date');
+  const timeInput = document.getElementById('schedule-time');
+  
+  if (dateInput) {
+    dateInput.value = tomorrow.toISOString().split('T')[0];
+    dateInput.min = new Date().toISOString().split('T')[0]; // Can't schedule in past
+  }
+  
+  if (timeInput) {
+    timeInput.value = '10:00';
+  }
+  
+  updateScheduleSummary();
+  
+  const modal = document.getElementById('bulk-schedule-modal');
+  if (modal) {
+    modal.classList.add('active');
+  }
+}
+
+function updateScheduleSummary() {
+  const dateInput = document.getElementById('schedule-date');
+  const timeInput = document.getElementById('schedule-time');
+  const parallelInput = document.getElementById('parallel-calls');
+  const intervalInput = document.getElementById('call-interval');
+  const summaryDiv = document.getElementById('schedule-summary-content');
+  
+  if (!dateInput || !timeInput || !parallelInput || !intervalInput || !summaryDiv) return;
+  
+  const selectedCount = state.selectedLeads.size;
+  const parallelCalls = parseInt(parallelInput.value);
+  const callInterval = parseInt(intervalInput.value);
+  
+  if (!dateInput.value || !timeInput.value) {
+    summaryDiv.innerHTML = 'Select date and time to see estimated completion';
+    return;
+  }
+  
+  // Calculate batches
+  const batchCount = Math.ceil(selectedCount / parallelCalls);
+  const totalTime = (batchCount - 1) * callInterval + 180; // +3 min avg call duration
+  const totalMinutes = Math.ceil(totalTime / 60);
+  
+  // Parse as IST timezone
+  const dateTimeString = `${dateInput.value}T${timeInput.value}:00+05:30`;
+  const startDateTime = new Date(dateTimeString);
+  const startFormatted = startDateTime.toLocaleString('en-IN', { 
+    dateStyle: 'medium', 
+    timeStyle: 'short',
+    timeZone: 'Asia/Kolkata'
+  });
+  
+  // Calculate end time
+  const endDateTime = new Date(startDateTime.getTime() + totalTime * 1000);
+  const endFormatted = endDateTime.toLocaleString('en-IN', { 
+    timeStyle: 'short',
+    timeZone: 'Asia/Kolkata'
+  });
+  
+  summaryDiv.innerHTML = `
+    <div style="line-height: 1.6;">
+      <div>📞 <strong>${selectedCount} leads</strong> in <strong>${batchCount} batches</strong></div>
+      <div>⚡ <strong>${parallelCalls} calls</strong> per batch</div>
+      <div>⏱️ <strong>${callInterval}s</strong> between batches</div>
+      <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;">
+        <div>🕐 Start: <strong>${startFormatted} IST</strong></div>
+        <div>🏁 Est. Complete: <strong>${endFormatted} IST</strong> (~${totalMinutes} min)</div>
+      </div>
+    </div>
+  `;
+}
+
+async function scheduleBulkCalls(event) {
+  event.preventDefault();
+  
+  const dateInput = document.getElementById('schedule-date');
+  const timeInput = document.getElementById('schedule-time');
+  const parallelInput = document.getElementById('parallel-calls');
+  const intervalInput = document.getElementById('call-interval');
+  
+  if (!dateInput || !timeInput) {
+    showMessage('error', 'Please select date and time');
+    return;
+  }
+  
+  // Parse date and time as IST (Asia/Kolkata timezone)
+  // Format: "2025-10-14T10:00:00+05:30"
+  const dateTimeString = `${dateInput.value}T${timeInput.value}:00+05:30`;
+  const startDateTime = new Date(dateTimeString);
+  const now = new Date();
+  
+  if (startDateTime <= now) {
+    showMessage('error', 'Start time must be in the future');
+    return;
+  }
+  
+  const lead_uuids = Array.from(state.selectedLeads);
+  const parallel_calls = parseInt(parallelInput.value);
+  const call_interval = parseInt(intervalInput.value);
+  
+  // Send as ISO string with IST timezone
+  const startTimeIST = dateTimeString;
+  
+  showLoader(true);
+  
+  try {
+    const response = await fetch('/api/schedule-bulk-calls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lead_uuids,
+        start_time: startTimeIST,
+        parallel_calls,
+        call_interval
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(result.error || 'Failed to schedule calls');
+    }
+    
+    showMessage('success', `✅ Scheduled ${result.scheduled_count} calls in ${result.batch_count} batches!`);
+    
+    // Clear selection
+    state.selectedLeads.clear();
+    updateSelectedCount();
+    
+    // Close modal
+    closeAllModals();
+    
+    // Refresh leads
+    await fetchLeads();
+    
+  } catch (error) {
+    console.error('Error scheduling bulk calls:', error);
+    showMessage('error', error.message || 'Failed to schedule bulk calls');
+  } finally {
+    showLoader(false);
+  }
 }

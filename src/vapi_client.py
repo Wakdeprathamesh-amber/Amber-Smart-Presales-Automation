@@ -3,6 +3,7 @@ import requests
 import json
 from datetime import datetime
 from src.observability import trace_vapi_call
+from src.utils import get_ist_timestamp, get_ist_now
 
 class VapiClient:
     def __init__(self, api_key):
@@ -41,8 +42,8 @@ class VapiClient:
         
         # Payload format as per Vapi documentation
         # Precompute date vars
-        today_iso = datetime.now().date().isoformat()
-        today_human = datetime.now().strftime("%A, %B %d, %Y")
+        today_iso = get_ist_now().date().isoformat()
+        today_human = get_ist_now().strftime("%A, %B %d, %Y")
 
         payload = {
             "assistantId": assistant_id,
@@ -62,7 +63,7 @@ class VapiClient:
                 "lead_uuid": lead_data.get("lead_uuid", ""),
                 # Keep legacy id fallback in case Vapi dashboard displays it
                 "lead_id": lead_data.get("id", ""),
-                "initiated_at": datetime.now().isoformat(),
+                "initiated_at": get_ist_timestamp(),
                 # Provide current date context for assistant prompts
                 "today_iso": today_iso,
                 "today_human": today_human

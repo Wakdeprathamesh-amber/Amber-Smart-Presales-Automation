@@ -4,6 +4,7 @@ import imaplib
 import email
 from email.header import decode_header
 from datetime import datetime
+from src.utils import get_ist_timestamp, get_ist_now
 import requests
 
 
@@ -129,7 +130,7 @@ def poll_once(sheets_manager, auto_reply=False, ai_reply_func=None, email_client
                     lead_uuid=lead_uuid or '',
                     channel='email',
                     direction='in',
-                    timestamp=datetime.now().isoformat(),
+                    timestamp=get_ist_timestamp(),
                     subject=subject,
                     content=body_text,
                     summary='',
@@ -190,7 +191,7 @@ def poll_once(sheets_manager, auto_reply=False, ai_reply_func=None, email_client
                                 lead_uuid=lead_uuid or '',
                                 channel='email',
                                 direction='out',
-                                timestamp=datetime.now().isoformat(),
+                                timestamp=get_ist_timestamp(),
                                 subject=f"Re: {subject}",
                                 content=reply_text,
                                 summary='',

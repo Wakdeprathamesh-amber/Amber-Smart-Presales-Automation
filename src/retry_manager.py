@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from src.utils import get_ist_timestamp, get_ist_now
 
 class RetryManager:
     def __init__(self, max_retries=3, retry_intervals=None, interval_unit='hours'):
@@ -51,9 +52,9 @@ class RetryManager:
         
         # Calculate and return the next retry time
         if self.interval_unit == 'minutes':
-            next_time = datetime.now() + timedelta(minutes=amount_to_add)
+            next_time = get_ist_now() + timedelta(minutes=amount_to_add)
         else:
-            next_time = datetime.now() + timedelta(hours=amount_to_add)
+            next_time = get_ist_now() + timedelta(hours=amount_to_add)
         return next_time.isoformat()
     
     def should_trigger_fallback(self, current_retry_count):

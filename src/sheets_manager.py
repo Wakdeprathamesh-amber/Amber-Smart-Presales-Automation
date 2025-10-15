@@ -3,6 +3,7 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
+from src.utils import get_ist_timestamp, get_ist_now
 import uuid
 
 class SheetsManager:
@@ -74,7 +75,7 @@ class SheetsManager:
                 print("No leads found in sheet")
                 return []
             
-            now_dt = datetime.now()
+            now_dt = get_ist_now()
             
             # Filter for leads that are pending or due for retry
             pending_leads = []
