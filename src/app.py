@@ -170,18 +170,34 @@ def get_email_client():
 app = Flask(__name__, static_folder='static', template_folder='templates')
 # Utility
 def _normalize_phone(raw: str) -> str:
-    """Return digits-only phone string. Removes spaces and non-digits."""
-    if not raw:
-        return ''
-    return re.sub(r"\D+", "", str(raw))
+    """
+    Normalize phone number using advanced sanitization.
+    Handles spaces, dashes, parentheses, and ensures proper format.
+    
+    Args:
+        raw: Raw phone number input
+        
+    Returns:
+        str: Sanitized E.164 format (e.g., "+919876543210")
+    """
+    from src.utils import sanitize_phone_number
+    return sanitize_phone_number(raw)
 
-def _is_valid_phone(digits_only: str) -> bool:
-    """Basic validation: 10-15 digits (international)."""
-    try:
-        n = len(digits_only or '')
-        return 10 <= n <= 15
-    except Exception:
-        return False
+def _is_valid_phone(phone: str) -> bool:
+    """
+    Validate phone number format.
+    
+    Args:
+        phone: Phone number to validate (should be sanitized first)
+        
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    from src.utils import validate_phone_number
+    is_valid, error_msg = validate_phone_number(phone)
+    if not is_valid:
+        logger.warning(f"Phone validation failed: {error_msg}")
+    return is_valid
 
 # Dashboard routes
 @app.route('/')
@@ -242,14 +258,16 @@ def add_lead():
         # Prepare the new lead row with stable UUID
         lead_uuid = str(uuid.uuid4())
         
-        # Headers must match initialize_sheet schema order
-        number_norm = _normalize_phone(lead_data.get('number', ''))
-        whatsapp_norm = _normalize_phone(lead_data.get('number', ''))
-        if not _is_valid_phone(number_norm):
-            return jsonify({"error": "Invalid phone number. Please enter 10-15 digits."}), 400
-        # Store in E.164 format with leading + in the sheet
-        number_e164 = f"+{number_norm}"
-        whatsapp_e164 = f"+{whatsapp_norm}" if whatsapp_norm else number_e164
+        # Sanitize and validate phone numbers
+        number_e164 = _normalize_phone(lead_data.get('number', ''))
+        whatsapp_input = lead_data.get('whatsapp_number', '') or lead_data.get('number', '')
+        whatsapp_e164 = _normalize_phone(whatsapp_input) if whatsapp_input else number_e164
+        
+        # Validate phone number
+        if not _is_valid_phone(number_e164):
+            return jsonify({
+                "error": "Invalid phone number format. Use format: +919876543210 or 91 9876543210 or 919876543210"
+            }), 400
         new_lead = [
             lead_uuid,                          # lead_uuid
             number_e164,                            # number (E.164)

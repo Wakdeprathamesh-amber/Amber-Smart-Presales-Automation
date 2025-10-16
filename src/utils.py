@@ -153,3 +153,118 @@ def timestamp_ist() -> str:
     """Alias for get_ist_timestamp() for backward compatibility."""
     return get_ist_timestamp()
 
+
+# Phone number utilities
+def sanitize_phone_number(phone: str) -> str:
+    """
+    Sanitize phone number by removing spaces, dashes, parentheses, and other formatting.
+    Ensures number starts with + and country code.
+    
+    Args:
+        phone: Raw phone number (e.g., "91 9876543210", "+91-987-654-3210", "(91) 9876543210")
+        
+    Returns:
+        str: Sanitized phone number (e.g., "+919876543210")
+    """
+    if not phone:
+        return ""
+    
+    # Convert to string and strip whitespace
+    phone = str(phone).strip()
+    
+    if not phone:
+        return ""
+    
+    # Remove common formatting characters
+    phone = phone.replace(' ', '')   # Remove spaces
+    phone = phone.replace('-', '')   # Remove dashes
+    phone = phone.replace('(', '')   # Remove opening parentheses
+    phone = phone.replace(')', '')   # Remove closing parentheses
+    phone = phone.replace('.', '')   # Remove dots
+    phone = phone.replace('_', '')   # Remove underscores
+    
+    # Ensure it starts with +
+    if not phone.startswith('+'):
+        # If starts with 00, replace with +
+        if phone.startswith('00'):
+            phone = '+' + phone[2:]
+        else:
+            # Assume it needs + prefix (add it)
+            phone = '+' + phone
+    
+    # Remove any non-digit characters except the leading +
+    # Keep only: +1234567890
+    import re
+    phone = '+' + re.sub(r'[^\d]', '', phone[1:])
+    
+    return phone
+
+
+def validate_phone_number(phone: str) -> tuple[bool, str]:
+    """
+    Validate phone number format.
+    
+    Args:
+        phone: Phone number to validate
+        
+    Returns:
+        tuple: (is_valid: bool, error_message: str)
+    """
+    if not phone:
+        return False, "Phone number is empty"
+    
+    # Sanitize first
+    sanitized = sanitize_phone_number(phone)
+    
+    # Must start with +
+    if not sanitized.startswith('+'):
+        return False, "Phone number must start with +"
+    
+    # Must have 11-16 digits (including country code)
+    # Format: +CC (1-3 digits) + Number (8-13 digits)
+    digits_only = sanitized[1:]  # Remove +
+    
+    if len(digits_only) < 10:
+        return False, f"Phone number too short ({len(digits_only)} digits, need at least 10)"
+    
+    if len(digits_only) > 15:
+        return False, f"Phone number too long ({len(digits_only)} digits, max 15)"
+    
+    # Must contain only digits after +
+    if not digits_only.isdigit():
+        return False, "Phone number contains invalid characters"
+    
+    return True, ""
+
+
+def format_phone_display(phone: str) -> str:
+    """
+    Format phone number for display (with spaces for readability).
+    
+    Args:
+        phone: Sanitized phone number (e.g., "+919876543210")
+        
+    Returns:
+        str: Formatted for display (e.g., "+91 98765 43210")
+    """
+    if not phone or len(phone) < 5:
+        return phone
+    
+    # For Indian numbers (+91)
+    if phone.startswith('+91') and len(phone) == 13:
+        return f"{phone[:3]} {phone[3:8]} {phone[8:]}"
+    
+    # For US/Canada numbers (+1)
+    if phone.startswith('+1') and len(phone) == 12:
+        return f"{phone[:2]} ({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+    
+    # For UK numbers (+44)
+    if phone.startswith('+44') and len(phone) >= 12:
+        return f"{phone[:3]} {phone[3:7]} {phone[7:]}"
+    
+    # Default: just add space after country code
+    if len(phone) > 4:
+        return f"{phone[:3]} {phone[3:]}"
+    
+    return phone
+
