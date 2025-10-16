@@ -429,7 +429,10 @@ def trigger_callback_call(lead_uuid: str):
         from src.vapi_client import VapiClient
         
         # Initialize clients
-        sheets_manager = SheetsManager()
+        sheets_manager = SheetsManager(
+            credentials_file=os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'),
+            sheet_id=os.getenv('LEADS_SHEET_ID')
+        )
         vapi_api_key = os.getenv('VAPI_API_KEY')
         vapi_client = VapiClient(vapi_api_key) if vapi_api_key else None
         
@@ -596,7 +599,10 @@ def call_single_lead_bulk(lead_uuid: str):
         from src.utils import get_ist_timestamp
         
         # Initialize clients
-        sheets_manager = SheetsManager()
+        sheets_manager = SheetsManager(
+            credentials_file=os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'),
+            sheet_id=os.getenv('LEADS_SHEET_ID')
+        )
         vapi_api_key = os.getenv('VAPI_API_KEY')
         vapi_client = VapiClient(vapi_api_key) if vapi_api_key else None
         
