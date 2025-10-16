@@ -274,6 +274,13 @@ def run_reconciliation_job():
         
         # Get all leads in 'initiated' state
         worksheet = sheets_manager.sheet.worksheet("Leads")
+        
+        # Check if sheet has data before calling get_all_records()
+        values = worksheet.get_values()
+        if len(values) <= 1:  # Only header or empty
+            logger.info("[Job] Sheet is empty, no leads to reconcile")
+            return {"reconciled": 0}
+        
         all_leads = worksheet.get_all_records()
         
         initiated_leads = [

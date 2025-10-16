@@ -43,6 +43,7 @@ email_client = None
 _leads_cache = {"data": None, "ts": 0}
 _details_cache = {}
 _CACHE_TTL_SECONDS = 60  # Increased from 15 to 60 seconds to reduce Google Sheets API calls
+_CACHE_STALE_OK_SECONDS = 300  # Serve stale cache for up to 5 minutes during rate limit errors
 
 
 def _resolve_email_settings() -> dict:
@@ -214,14 +215,18 @@ def get_leads():
         from time import time
         now = time()
         if _leads_cache["data"] is not None and (now - _leads_cache["ts"]) < _CACHE_TTL_SECONDS:
+            logger.debug(f"Serving leads from fresh cache (age: {now - _leads_cache['ts']:.1f}s)")
             return jsonify(_leads_cache["data"]) 
-        # Get the worksheet
+        
+        # Try to fetch from Sheets
         worksheet = get_sheets_manager().sheet.worksheet("Leads")
         
         # Check if sheet is empty or has no data rows
         values = worksheet.get_values()
         if len(values) <= 1:  # Only header row or empty
             logger.info("Sheet is empty or has only headers")
+            _leads_cache["data"] = []
+            _leads_cache["ts"] = now
             return jsonify([])
             
         # Get all records
@@ -231,15 +236,36 @@ def get_leads():
         for idx, lead in enumerate(leads):
             lead['id'] = str(idx)
         
+        # Update cache with fresh data
         _leads_cache["data"] = leads
         _leads_cache["ts"] = now
+        logger.debug(f"Fetched {len(leads)} leads from Sheets, cache updated")
         return jsonify(leads)
+        
     except Exception as e:
-        # Serve stale cache if available to avoid blank dashboard during quota spikes
+        # Check if error is rate limiting (429)
+        error_msg = str(e)
+        is_rate_limit = '429' in error_msg or 'RATE_LIMIT_EXCEEDED' in error_msg
+        
+        # Serve stale cache if available (even if old) during rate limits
         if _leads_cache["data"] is not None:
-            logger.warning(f"Sheets read failed, serving cached leads: {e}")
-            return jsonify(_leads_cache["data"]) 
-        logger.error(f"Error getting leads and no cache available: {e}", exc_info=True)
+            cache_age = time() - _leads_cache["ts"]
+            
+            if is_rate_limit:
+                logger.warning(f"⚠️  Google Sheets rate limit hit! Serving stale cache (age: {cache_age:.1f}s)")
+            elif cache_age < _CACHE_STALE_OK_SECONDS:
+                logger.warning(f"Sheets read failed, serving stale cache (age: {cache_age:.1f}s): {e}")
+            else:
+                logger.error(f"Sheets read failed and cache too old ({cache_age:.1f}s), serving anyway: {e}")
+            
+            return jsonify(_leads_cache["data"])
+        
+        # No cache available at all
+        if is_rate_limit:
+            logger.error(f"⚠️  Google Sheets rate limit and no cache! Returning empty. Wait 60s before retry.")
+        else:
+            logger.error(f"Error getting leads and no cache available: {e}", exc_info=True)
+        
         return jsonify([])
 
 @app.route('/api/leads', methods=['POST'])
