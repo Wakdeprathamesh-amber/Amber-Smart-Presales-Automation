@@ -183,19 +183,24 @@ def sanitize_phone_number(phone: str) -> str:
     phone = phone.replace('.', '')   # Remove dots
     phone = phone.replace('_', '')   # Remove underscores
     
-    # Ensure it starts with +
+    # Handle 00 prefix (convert to +)
+    if phone.startswith('00'):
+        phone = '+' + phone[2:]
+    
+    # Ensure it starts with exactly one +
+    # Remove multiple + symbols if present
+    while phone.startswith('++'):
+        phone = phone[1:]
+    
     if not phone.startswith('+'):
-        # If starts with 00, replace with +
-        if phone.startswith('00'):
-            phone = '+' + phone[2:]
-        else:
-            # Assume it needs + prefix (add it)
-            phone = '+' + phone
+        phone = '+' + phone
     
     # Remove any non-digit characters except the leading +
     # Keep only: +1234567890
     import re
-    phone = '+' + re.sub(r'[^\d]', '', phone[1:])
+    # Extract just the digits after the first character (skip the +)
+    digits = re.sub(r'[^\d]', '', phone[1:])
+    phone = '+' + digits
     
     return phone
 
