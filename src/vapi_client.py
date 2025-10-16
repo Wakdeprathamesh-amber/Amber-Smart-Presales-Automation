@@ -35,10 +35,19 @@ class VapiClient:
         """
         endpoint = f"{self.base_url}/call"
         
-        # Format the phone number if needed
-        phone_number = str(lead_data.get("number", ""))
+        # Format and validate the phone number
+        phone_number = str(lead_data.get("number", "")).strip()
+        if not phone_number:
+            logger.error(f"[Vapi] Missing phone number for lead: {lead_data.get('lead_uuid', 'unknown')}")
+            return {"error": "Missing phone number"}
+        
         if not phone_number.startswith("+"):
             phone_number = f"+{phone_number}"
+        
+        # Validate phone number format (should be +[country code][number])
+        if len(phone_number) < 10 or not phone_number[1:].isdigit():
+            logger.error(f"[Vapi] Invalid phone number format: {phone_number} for lead: {lead_data.get('lead_uuid', 'unknown')}")
+            return {"error": f"Invalid phone number format: {phone_number}"}
         
         # Payload format as per Vapi documentation
         # Precompute date vars

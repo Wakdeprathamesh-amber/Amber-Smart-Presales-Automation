@@ -119,6 +119,12 @@ def run_call_orchestrator_job():
                     continue
                 
                 # Prepare initial state
+                # Safely convert retry_count (might be empty string from Sheets)
+                try:
+                    retry_count = int(lead.get('retry_count') or 0)
+                except (ValueError, TypeError):
+                    retry_count = 0
+                
                 initial_state = {
                     "lead_uuid": lead_uuid,
                     "lead_name": lead.get('name', ''),
@@ -126,7 +132,7 @@ def run_call_orchestrator_job():
                     "lead_email": lead.get('email', ''),
                     "whatsapp_number": lead.get('whatsapp_number') or lead.get('number', ''),
                     "call_status": lead.get('call_status', 'pending'),
-                    "retry_count": int(lead.get('retry_count', 0)),
+                    "retry_count": retry_count,
                     "max_retries": int(os.getenv('MAX_RETRY_COUNT', '3')),
                     "channels_tried": [],
                     "last_channel": "",
