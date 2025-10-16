@@ -211,10 +211,11 @@
             <label for="call-interval" class="form-label">Interval Between Batches</label>
             <select id="call-interval" name="call-interval" class="form-control">
               <option value="30">30 seconds</option>
-              <option value="60" selected>60 seconds (Recommended)</option>
-              <option value="120">120 seconds</option>
+              <option value="60">60 seconds</option>
+              <option value="120" selected>120 seconds (2 minutes - Recommended)</option>
+              <option value="180">180 seconds (3 minutes)</option>
             </select>
-            <div class="form-hint">Time to wait before starting the next batch</div>
+            <div class="form-hint">Time to wait before starting the next batch (default: 2 minutes)</div>
           </div>
           
           <div class="form-group">
