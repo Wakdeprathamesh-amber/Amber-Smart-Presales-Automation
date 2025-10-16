@@ -45,12 +45,17 @@ class VapiClient:
         today_iso = get_ist_now().date().isoformat()
         today_human = get_ist_now().strftime("%A, %B %d, %Y")
 
+        # Extract first name for more natural greeting
+        from src.utils import extract_first_name
+        full_name = str(lead_data.get("name") or "")
+        first_name = extract_first_name(full_name) or full_name  # Fallback to full name if extraction fails
+        
         payload = {
             "assistantId": assistant_id,
             # Pass dynamic variables for prompt interpolation (e.g., {{name}})
             "assistantOverrides": {
                 "variableValues": {
-                    "name": str(lead_data.get("name") or ""),
+                    "name": first_name,  # Pass first name only for natural greeting
                     "partner": str(lead_data.get("partner") or "")
                 }
             },

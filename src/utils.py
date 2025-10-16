@@ -268,3 +268,40 @@ def format_phone_display(phone: str) -> str:
     
     return phone
 
+
+# Name utilities
+def extract_first_name(full_name: str) -> str:
+    """
+    Extract first name from full name for more natural greetings.
+    
+    Args:
+        full_name: Full name (e.g., "Prathamesh Kumar", "DINESH BASKARAN SHANTHI")
+        
+    Returns:
+        str: First name only (e.g., "Prathamesh", "Dinesh")
+        
+    Examples:
+        "Prathamesh Kumar" → "Prathamesh"
+        "DINESH BASKARAN SHANTHI" → "Dinesh"
+        "john smith" → "John"
+        "Priya" → "Priya"
+    """
+    if not full_name:
+        return ""
+    
+    # Strip whitespace and split by spaces
+    name_parts = str(full_name).strip().split()
+    
+    if not name_parts:
+        return ""
+    
+    # Get first part (first name)
+    first_name = name_parts[0]
+    
+    # Capitalize properly (handle all caps names like "DINESH")
+    # If all caps, convert to title case
+    if first_name.isupper() and len(first_name) > 1:
+        first_name = first_name.capitalize()
+    
+    return first_name
+
