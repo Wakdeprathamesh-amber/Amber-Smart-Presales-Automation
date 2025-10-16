@@ -357,7 +357,7 @@ def create_lead_workflow():
     
     # Add nodes
     workflow.add_node("initiate_call", initiate_call_node)
-    workflow.add_node("check_retry", check_retry_node)
+    # Note: check_retry_node is NOT added as a node - it's used only for conditional routing
     workflow.add_node("increment_retry", increment_retry_node)
     workflow.add_node("whatsapp_fallback", whatsapp_fallback_node)
     workflow.add_node("email_fallback", email_fallback_node)
@@ -366,13 +366,10 @@ def create_lead_workflow():
     workflow.set_entry_point("initiate_call")
     
     # Add conditional edges from initiate_call
-    # Note: In real system, webhook updates the state asynchronously
-    # For now, we check retry after call initiation
-    workflow.add_edge("initiate_call", "check_retry")
-    
-    # Add conditional edges from check_retry
+    # check_retry_node is used as a routing function, not a state-updating node
+    # It returns a string ("retry", "fallback", or "complete") to determine next step
     workflow.add_conditional_edges(
-        "check_retry",
+        "initiate_call",
         check_retry_node,
         {
             "retry": "increment_retry",

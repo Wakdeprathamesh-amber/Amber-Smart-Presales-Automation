@@ -1,9 +1,12 @@
 import os
 import requests
 import json
+import logging
 from datetime import datetime
 from src.observability import trace_vapi_call
 from src.utils import get_ist_timestamp, get_ist_now
+
+logger = logging.getLogger(__name__)
 
 class VapiClient:
     def __init__(self, api_key):
@@ -41,6 +44,11 @@ class VapiClient:
             logger.error(f"[Vapi] Missing phone number for lead: {lead_data.get('lead_uuid', 'unknown')}")
             return {"error": "Missing phone number"}
         
+        # Remove any extra '+' symbols (handle ++91...)
+        while phone_number.startswith('++'):
+            phone_number = phone_number[1:]
+        
+        # Ensure it starts with exactly one +
         if not phone_number.startswith("+"):
             phone_number = f"+{phone_number}"
         
