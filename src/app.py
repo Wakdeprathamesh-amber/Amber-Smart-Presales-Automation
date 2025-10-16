@@ -46,6 +46,14 @@ _CACHE_TTL_SECONDS = 60  # Increased from 15 to 60 seconds to reduce Google Shee
 _CACHE_STALE_OK_SECONDS = 300  # Serve stale cache for up to 5 minutes during rate limit errors
 
 
+def _invalidate_leads_cache():
+    """Invalidate the leads cache to force refresh on next request."""
+    global _leads_cache
+    _leads_cache["data"] = None
+    _leads_cache["ts"] = 0
+    logger.debug("🔄 Leads cache invalidated")
+
+
 def _resolve_email_settings() -> dict:
     """Return current email subject/body applying Eshwari defaults and overriding legacy placeholders."""
     default_subject = 'Missed Call Follow-Up Email'
@@ -330,6 +338,10 @@ def add_lead():
                     worksheet.update_cell(new_row_index_0 + 2, partner_col, partner)
         except Exception:
             pass
+        
+        # Invalidate cache to show new lead immediately
+        _invalidate_leads_cache()
+        
         return jsonify({"success": True, "message": "Lead added successfully", "lead_uuid": lead_uuid})
     except Exception as e:
         logger.error(f"Error adding lead: {e}", exc_info=True)
@@ -453,6 +465,9 @@ def initiate_call(lead_uuid):
         except Exception:
             pass
         
+        # Invalidate cache to show updated status immediately
+        _invalidate_leads_cache()
+        
         return jsonify({
             "success": True,
             "message": "Call initiated successfully",
@@ -470,6 +485,10 @@ def delete_lead(lead_uuid):
         deleted = get_sheets_manager().delete_lead_by_uuid(lead_uuid)
         if not deleted:
             return jsonify({"error": "Lead not found"}), 404
+        
+        # Invalidate cache to remove deleted lead immediately
+        _invalidate_leads_cache()
+        
         return jsonify({"success": True})
     except Exception as e:
         logger.error(f"Error deleting lead {lead_uuid}: {e}", exc_info=True)
@@ -484,6 +503,10 @@ def vapi_webhook():
         logger.info(f"Received webhook event: {json.dumps(event_data)}")
         
         result = get_webhook_handler().handle_event(event_data)
+        
+        # Invalidate cache after webhook updates (call status changes, etc.)
+        _invalidate_leads_cache()
+        
         return jsonify(result)
     
     except Exception as e:
