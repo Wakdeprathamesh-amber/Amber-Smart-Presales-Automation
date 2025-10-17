@@ -378,8 +378,10 @@ def create_lead_workflow():
         }
     )
     
-    # After incrementing retry, loop back to initiate_call
-    workflow.add_edge("increment_retry", "initiate_call")
+    # After incrementing retry, EXIT workflow (don't loop back!)
+    # Retry manager will schedule the next attempt for later (1 hour, 4 hours, etc.)
+    # Immediate retry loop causes "Over Concurrency Limit" errors
+    workflow.add_edge("increment_retry", END)
     
     # Fallback chain: WhatsApp → Email → END
     workflow.add_edge("whatsapp_fallback", "email_fallback")
