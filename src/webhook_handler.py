@@ -432,8 +432,20 @@ class WebhookHandler:
                     time = msg.get('time', '')
                     
                     if message_text:
-                        # Format: "Assistant: Hello, how can I help?"
-                        role_name = "Assistant" if role == "assistant" else "User"
+                        # Skip system prompts (they start with "Current Time & Context" or are very long)
+                        if role == 'system':
+                            continue
+                        
+                        # Skip if message looks like a system prompt (contains prompt keywords)
+                        if any(keyword in message_text for keyword in ['Current Time & Context', 'systemPrompt', 'Behavior & Personality', 'Your Identity']):
+                            continue
+                        
+                        # Skip extremely long messages (likely prompts, not conversation)
+                        if len(message_text) > 1000:
+                            continue
+                        
+                        # Format: "Eshwari: Hello, how can I help?" or "Prathamesh: I need help"
+                        role_name = "Eshwari" if role == "assistant" else "Prathamesh"
                         transcript_lines.append(f"{role_name}: {message_text}")
                 
                 transcript_text = '\n\n'.join(transcript_lines)
@@ -447,9 +459,23 @@ class WebhookHandler:
                     for msg in messages:
                         role = msg.get('role', 'unknown')
                         content = msg.get('message', '') or msg.get('content', '')
+                        
                         if content:
-                            role_name = "Assistant" if role == "assistant" else "User"
+                            # Skip system prompts
+                            if role == 'system':
+                                continue
+                            
+                            # Skip prompt-like content
+                            if any(keyword in content for keyword in ['Current Time & Context', 'systemPrompt', 'Behavior & Personality', 'Your Identity']):
+                                continue
+                            
+                            # Skip very long messages (likely prompts)
+                            if len(content) > 1000:
+                                continue
+                            
+                            role_name = "Eshwari" if role == "assistant" else "Prathamesh"
                             transcript_lines.append(f"{role_name}: {content}")
+                    
                     transcript_text = '\n\n'.join(transcript_lines)
                     print(f"[CallReport] Fallback: Extracted from messages array ({len(transcript_lines)} messages)")
             
