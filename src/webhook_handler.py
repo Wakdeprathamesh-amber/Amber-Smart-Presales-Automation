@@ -411,49 +411,57 @@ class WebhookHandler:
         except Exception:
             lead_uuid_for_trace = 'unknown'
         
-        # Attempt to fetch transcript and log everything to LangFuse
+        # Extract transcript from webhook payload (not from separate API call)
         transcript_text = ''
         try:
-            # call_id already extracted above
-            if call_id and self.vapi_client is not None:
-                print(f"[CallReport] Fetching transcript for call_id: {call_id}")
-                t = self.vapi_client.get_transcription(call_id)
-                print(f"[CallReport] Transcript API response type: {type(t)}, keys: {t.keys() if isinstance(t, dict) else 'N/A'}")
+            # According to Vapi docs, transcript is in message.artifact.transcript
+            artifact = message.get("artifact", {})
+            transcript_array = artifact.get("transcript", [])
+            
+            print(f"[CallReport] Extracting transcript from webhook artifact")
+            print(f"[CallReport] Artifact keys: {list(artifact.keys())}")
+            print(f"[CallReport] Transcript array length: {len(transcript_array) if isinstance(transcript_array, list) else 'not a list'}")
+            
+            if isinstance(transcript_array, list) and len(transcript_array) > 0:
+                # Build formatted transcript from array of messages
+                # Format: [{"role": "assistant", "message": "...", "time": 0.5}, ...]
+                transcript_lines = []
+                for msg in transcript_array:
+                    role = msg.get('role', 'unknown')
+                    message_text = msg.get('message', '') or msg.get('content', '')
+                    time = msg.get('time', '')
+                    
+                    if message_text:
+                        # Format: "Assistant: Hello, how can I help?"
+                        role_name = "Assistant" if role == "assistant" else "User"
+                        transcript_lines.append(f"{role_name}: {message_text}")
                 
-                if isinstance(t, dict):
-                    # Try different possible transcript formats
-                    transcript_text = t.get('transcript') or t.get('text') or t.get('content') or ''
-                    
-                    # Check if error in response
-                    if t.get('error'):
-                        print(f"[CallReport] Transcript API error: {t.get('error')}")
-                    
-                    # Some APIs return array of segments
-                    if not transcript_text and isinstance(t.get('segments'), list):
-                        transcript_text = ' '.join([s.get('text','') for s in t['segments']])
-                    
-                    # Check if it's in 'messages' array (common Vapi format)
-                    if not transcript_text and isinstance(t.get('messages'), list):
-                        messages = []
-                        for msg in t['messages']:
-                            role = msg.get('role', 'unknown')
-                            content = msg.get('message', '') or msg.get('content', '')
-                            if content:
-                                messages.append(f"{role}: {content}")
-                        transcript_text = '\n\n'.join(messages)
-                    
-                    print(f"[CallReport] Extracted transcript length: {len(transcript_text)} chars")
-                else:
-                    print(f"[CallReport] Transcript response is not a dict: {t}")
-                
-                if transcript_text:
-                    # Store transcript in sheet
-                    self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
-                    print(f"[CallReport] ✅ Transcript stored successfully ({len(transcript_text)} chars)")
-                else:
-                    print(f"[CallReport] ⚠️  No transcript text found in response")
+                transcript_text = '\n\n'.join(transcript_lines)
+                print(f"[CallReport] Formatted transcript: {len(transcript_lines)} messages, {len(transcript_text)} chars")
+            
+            # Fallback: Try messages or messagesOpenAIFormatted
+            if not transcript_text:
+                messages = artifact.get("messages", []) or artifact.get("messagesOpenAIFormatted", [])
+                if isinstance(messages, list) and len(messages) > 0:
+                    transcript_lines = []
+                    for msg in messages:
+                        role = msg.get('role', 'unknown')
+                        content = msg.get('message', '') or msg.get('content', '')
+                        if content:
+                            role_name = "Assistant" if role == "assistant" else "User"
+                            transcript_lines.append(f"{role_name}: {content}")
+                    transcript_text = '\n\n'.join(transcript_lines)
+                    print(f"[CallReport] Fallback: Extracted from messages array ({len(transcript_lines)} messages)")
+            
+            if transcript_text:
+                # Store transcript in sheet
+                self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
+                print(f"[CallReport] ✅ Transcript stored successfully ({len(transcript_text)} chars)")
+            else:
+                print(f"[CallReport] ⚠️  No transcript found in webhook artifact")
+                print(f"[CallReport] Available artifact fields: {list(artifact.keys())}")
         except Exception as te:
-            print(f"[CallReport] ❌ Transcript fetch/store failed: {te}")
+            print(f"[CallReport] ❌ Transcript extraction failed: {te}")
             import traceback
             traceback.print_exc()
         
