@@ -42,7 +42,7 @@ email_client = None
 # Simple in-memory caches
 _leads_cache = {"data": None, "ts": 0}
 _details_cache = {}
-_CACHE_TTL_SECONDS = 60  # Increased from 15 to 60 seconds to reduce Google Sheets API calls
+_CACHE_TTL_SECONDS = 10  # Short cache for real-time updates (was 60s, too long for production)
 _CACHE_STALE_OK_SECONDS = 300  # Serve stale cache for up to 5 minutes during rate limit errors
 
 
@@ -244,10 +244,13 @@ def get_version():
 def get_leads():
     """Get all leads from Google Sheets."""
     try:
-        # Serve from cache if fresh
+        # Check for cache-busting parameter
+        force_refresh = request.args.get('refresh', 'false').lower() == 'true'
+        
+        # Serve from cache if fresh (unless force refresh)
         from time import time
         now = time()
-        if _leads_cache["data"] is not None and (now - _leads_cache["ts"]) < _CACHE_TTL_SECONDS:
+        if not force_refresh and _leads_cache["data"] is not None and (now - _leads_cache["ts"]) < _CACHE_TTL_SECONDS:
             logger.debug(f"Serving leads from fresh cache (age: {now - _leads_cache['ts']:.1f}s)")
             return jsonify(_leads_cache["data"]) 
         
