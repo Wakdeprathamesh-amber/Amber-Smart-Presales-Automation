@@ -416,19 +416,46 @@ class WebhookHandler:
         try:
             # call_id already extracted above
             if call_id and self.vapi_client is not None:
+                print(f"[CallReport] Fetching transcript for call_id: {call_id}")
                 t = self.vapi_client.get_transcription(call_id)
+                print(f"[CallReport] Transcript API response type: {type(t)}, keys: {t.keys() if isinstance(t, dict) else 'N/A'}")
+                
                 if isinstance(t, dict):
-                    transcript_text = t.get('transcript') or t.get('text') or ''
+                    # Try different possible transcript formats
+                    transcript_text = t.get('transcript') or t.get('text') or t.get('content') or ''
+                    
+                    # Check if error in response
+                    if t.get('error'):
+                        print(f"[CallReport] Transcript API error: {t.get('error')}")
+                    
                     # Some APIs return array of segments
                     if not transcript_text and isinstance(t.get('segments'), list):
                         transcript_text = ' '.join([s.get('text','') for s in t['segments']])
+                    
+                    # Check if it's in 'messages' array (common Vapi format)
+                    if not transcript_text and isinstance(t.get('messages'), list):
+                        messages = []
+                        for msg in t['messages']:
+                            role = msg.get('role', 'unknown')
+                            content = msg.get('message', '') or msg.get('content', '')
+                            if content:
+                                messages.append(f"{role}: {content}")
+                        transcript_text = '\n\n'.join(messages)
+                    
+                    print(f"[CallReport] Extracted transcript length: {len(transcript_text)} chars")
+                else:
+                    print(f"[CallReport] Transcript response is not a dict: {t}")
                 
                 if transcript_text:
                     # Store transcript in sheet
                     self._with_retry(self.sheets_manager.update_transcript, lead_row, transcript_text)
-                    print(f"[CallReport] Transcript stored ({len(transcript_text)} chars)")
+                    print(f"[CallReport] ✅ Transcript stored successfully ({len(transcript_text)} chars)")
+                else:
+                    print(f"[CallReport] ⚠️  No transcript text found in response")
         except Exception as te:
-            print(f"[CallReport] Transcript fetch/store skipped: {te}")
+            print(f"[CallReport] ❌ Transcript fetch/store failed: {te}")
+            import traceback
+            traceback.print_exc()
         
         # Log complete analysis to LangFuse with all details
         try:
