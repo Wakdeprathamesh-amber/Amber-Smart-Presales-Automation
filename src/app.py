@@ -214,6 +214,31 @@ def index():
     """Render the dashboard homepage."""
     return render_template('index.html')
 
+@app.route('/api/version', methods=['GET'])
+def get_version():
+    """Get current deployment version."""
+    try:
+        from src.version import VERSION, LAST_UPDATED, RECENT_FIXES
+        from src.utils import sanitize_phone_number
+        
+        # Test phone sanitization
+        test_result = sanitize_phone_number("91 9876543210")
+        has_double_plus_bug = test_result.startswith("++")
+        
+        return jsonify({
+            "version": VERSION,
+            "last_updated": LAST_UPDATED,
+            "recent_fixes": RECENT_FIXES,
+            "phone_sanitization_test": {
+                "input": "91 9876543210",
+                "output": test_result,
+                "has_double_plus_bug": has_double_plus_bug,
+                "status": "BROKEN" if has_double_plus_bug else "FIXED"
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "version": "unknown"}), 500
+
 # API routes
 @app.route('/api/leads', methods=['GET'])
 def get_leads():
