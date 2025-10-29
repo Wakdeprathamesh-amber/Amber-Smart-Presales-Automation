@@ -13,11 +13,14 @@ const state = {
     notQualified: 0,
     pendingCalls: 0,
     retries: 0,
-    missed: 0
+    missed: 0,
+    successfulConversations: 0,
+    voicemail: 0
   },
   filters: {
     status: 'all',
-    searchQuery: ''
+    searchQuery: '',
+    special: null // one of: 'voicemail','nonconnected','successful','potential','notqualified' | null
   },
   retryConfig: {
     max_retries: 3,
@@ -61,6 +64,24 @@ function setupEventListeners() {
   const refreshBtn = document.getElementById('refresh-btn');
   if (refreshBtn) {
     refreshBtn.addEventListener('click', fetchLeads);
+  }
+
+  // Stats card quick filters
+  const cardPotential = document.getElementById('card-potential');
+  if (cardPotential) {
+    cardPotential.addEventListener('click', () => applyQuickFilter('potential'));
+  }
+  const cardNotQualified = document.getElementById('card-notqualified');
+  if (cardNotQualified) {
+    cardNotQualified.addEventListener('click', () => applyQuickFilter('notqualified'));
+  }
+  const cardSuccessful = document.getElementById('card-successful');
+  if (cardSuccessful) {
+    cardSuccessful.addEventListener('click', () => applyQuickFilter('successful'));
+  }
+  const cardVoicemail = document.getElementById('card-voicemail');
+  if (cardVoicemail) {
+    cardVoicemail.addEventListener('click', () => applyQuickFilter('voicemail'));
   }
 
   // Upload CSV button
@@ -1095,6 +1116,10 @@ function renderStats() {
   document.getElementById('pending-calls-count').textContent = state.stats.pendingCalls;
   document.getElementById('missed-calls-count').textContent = state.stats.missed;
   document.getElementById('qualified-leads-count').textContent = state.stats.qualified;
+  const pc = document.getElementById('potential-calls-count'); if (pc) pc.textContent = state.stats.potential;
+  const nq = document.getElementById('not-qualified-count'); if (nq) nq.textContent = state.stats.notQualified;
+  const sc = document.getElementById('successful-conv-count'); if (sc) sc.textContent = state.stats.successfulConversations;
+  const vm = document.getElementById('voicemail-count'); if (vm) vm.textContent = state.stats.voicemail;
 }
 
 function calculateStats() {
@@ -1106,6 +1131,8 @@ function calculateStats() {
   state.stats.notQualified = state.leads.filter(lead => lead.success_status === 'Not Qualified').length;
   state.stats.retries = state.leads.reduce((sum, lead) => sum + (parseInt(lead.retry_count) || 0), 0);
   state.stats.missed = state.leads.filter(lead => lead.call_status === 'missed').length;
+  state.stats.successfulConversations = state.leads.filter(isSuccessfulConversation).length;
+  state.stats.voicemail = state.leads.filter(isVoicemail).length;
 }
 
 function applyFilters() {
@@ -1117,6 +1144,15 @@ function applyFilters() {
       return false;
     }
     
+    // Special quick filter
+    if (state.filters.special) {
+      if (state.filters.special === 'voicemail' && !isVoicemail(lead)) return false;
+      if (state.filters.special === 'successful' && !isSuccessfulConversation(lead)) return false;
+      if (state.filters.special === 'nonconnected' && !isNonConnected(lead)) return false;
+      if (state.filters.special === 'potential' && lead.success_status !== 'Potential') return false;
+      if (state.filters.special === 'notqualified' && lead.success_status !== 'Not Qualified') return false;
+    }
+
     // Search query
     if (searchQuery && !(
       (lead.name && lead.name.toLowerCase().includes(searchQuery)) ||
@@ -1130,6 +1166,35 @@ function applyFilters() {
   });
   
   renderLeadsTable();
+}
+
+// Detection helpers
+function isNonConnected(lead) {
+  const dur = parseInt(lead.call_duration || 0);
+  const hasTranscript = !!(lead.transcript && String(lead.transcript).trim().length);
+  return lead.call_status === 'missed' || dur === 0 || !hasTranscript;
+}
+
+function isVoicemail(lead) {
+  const reason = (lead.last_ended_reason || '').toString().toLowerCase();
+  return reason.includes('voicemail') || reason.includes('voice mail') || reason.includes('answering machine');
+}
+
+function isSuccessfulConversation(lead) {
+  const dur = parseInt(lead.call_duration || 0);
+  const hasTranscript = !!(lead.transcript && String(lead.transcript).trim().length);
+  return (lead.call_status === 'completed' && dur > 0) || hasTranscript;
+}
+
+function applyQuickFilter(type) {
+  // Reset status dropdown to 'all' and set special filter
+  const statusFilter = document.getElementById('status-filter');
+  if (statusFilter) statusFilter.value = 'all';
+  state.filters.status = 'all';
+  state.filters.special = type; // one of: voicemail/successful/nonconnected/potential/notqualified
+  applyFilters();
+  // Optional: flash feedback
+  showMessage('info', `Applied filter: ${type}`);
 }
 
 // UI Utilities
