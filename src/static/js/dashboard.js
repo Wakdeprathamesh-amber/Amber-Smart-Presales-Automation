@@ -1076,16 +1076,33 @@ function renderLeadsTable() {
     const showCallButton = true;
     const isInitiated = lead.call_status === 'initiated';
     const isSelected = state.selectedLeads.has(lead.lead_uuid);
+
+    const connectionBadge = (() => {
+      if (isSuccessfulConversation(lead)) {
+        return '<span class="status-badge status-connected">Connected</span>';
+      }
+      if (isVoicemail(lead)) {
+        return '<span class="status-badge status-voicemail">Voicemail</span>';
+      }
+      if (lead.call_status === 'failed') {
+        return '<span class="status-badge status-failed">Failed</span>';
+      }
+      if (isNonConnected(lead)) {
+        return '<span class="status-badge status-no-answer">No Answer</span>';
+      }
+      return '<span class="status-badge status-pending">Pending</span>';
+    })();
     
     row.innerHTML = `
       <td><input type="checkbox" class="lead-checkbox" data-uuid="${lead.lead_uuid}" ${isSelected ? 'checked' : ''}></td>
       <td>${lead.name || 'N/A'}</td>
       <td>${lead.number || 'N/A'}</td>
       <td>${lead.email || 'N/A'}</td>
+      <td>${connectionBadge}</td>
       <td><span class="status-badge status-${lead.call_status || 'pending'}">${lead.call_status || 'pending'}</span></td>
       <td>
         ${lead.success_status ? 
-          `<span class=\"status-badge status-${lead.success_status.toLowerCase().replace(' ', '-')}\">${lead.success_status}</span>
+          `<span class=\"status-badge status-${lead.success_status.toLowerCase().replace(' ', '-') }\">${lead.success_status}</span>
            ${lead.summary ? '<span class=\"analysis-indicator\" title=\"Analysis available\">📊</span>' : ''}` 
           : 'N/A'}
       </td>

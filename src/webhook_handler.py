@@ -217,6 +217,13 @@ class WebhookHandler:
 
             # Handle missed/failed explicitly
             if status in ("missed", "failed"):
+                # Persist last_ended_reason as provided so UI can detect voicemail
+                try:
+                    self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {
+                        "last_ended_reason": ended_reason or ''
+                    })
+                except Exception:
+                    pass
                 return self._handle_missed_call(lead_row, event_data)
 
             # On ended, decide based on reason
@@ -233,10 +240,29 @@ class WebhookHandler:
                 ]
                 # If the call was never answered/connected, treat as missed regardless of reason text
                 if not answered_at:
+                    # Save raw reason (helps detect voicemail) then treat as missed
+                    try:
+                        self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {
+                            "last_ended_reason": ended_reason or ''
+                        })
+                    except Exception:
+                        pass
                     return self._handle_missed_call(lead_row, event_data)
                 if any(k in reason for k in missed_keywords):
+                    try:
+                        self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {
+                            "last_ended_reason": ended_reason or ''
+                        })
+                    except Exception:
+                        pass
                     return self._handle_missed_call(lead_row, event_data)
                 if any(k in reason for k in failed_keywords):
+                    try:
+                        self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {
+                            "last_ended_reason": ended_reason or ''
+                        })
+                    except Exception:
+                        pass
                     return self._handle_missed_call(lead_row, event_data)
             # Default: treat as completed and store ended reason (single write)
             self._with_retry(self.sheets_manager.update_lead_fields, lead_row, {

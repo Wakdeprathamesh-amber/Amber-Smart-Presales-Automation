@@ -221,6 +221,22 @@ tr:last-child td {
   vertical-align: middle;
 }
 
+/* Connection badges */
+.status-connected {
+  background-color: #dcfce7;
+  color: #15803d;
+}
+
+.status-voicemail {
+  background-color: #ede9fe;
+  color: #6d28d9;
+}
+
+.status-no-answer {
+  background-color: #fee2e2;
+  color: #b91c1c;
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
