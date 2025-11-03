@@ -699,9 +699,9 @@ def bulk_upload_leads():
                 if whatsapp_number and not _is_valid_phone(whatsapp_number):
                     errors.append({"row": idx + 2, "error": "Invalid whatsapp_number after normalization (need 10-15 digits)"})
                     continue
-                # Store as E.164 with leading +
-                number_e164 = f"+{number}"
-                whatsapp_e164 = f"+{whatsapp_number}" if whatsapp_number else number_e164
+                # Already normalized to E.164 format with single + prefix
+                number_e164 = number
+                whatsapp_e164 = whatsapp_number if whatsapp_number else number_e164
                 lead_uuid = str(uuid.uuid4())
                 new_lead = [
                     lead_uuid,
