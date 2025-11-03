@@ -823,6 +823,13 @@ def bulk_call():
             # Invalidate cache to force refresh
             _invalidate_leads_cache()
             
+            # Calculate accurate estimated duration
+            # Total batches = ceiling(total_leads / parallel_calls)
+            # Time = (batches - 1) * interval + avg_call_duration
+            total_batches = (len(eligible) + parallel_calls - 1) // parallel_calls
+            estimated_seconds = (total_batches - 1) * interval_seconds + 180  # +3 min avg call time
+            estimated_minutes = int(estimated_seconds / 60)
+            
             return jsonify({
                 "success": True,
                 "batch_mode": True,
@@ -830,7 +837,8 @@ def bulk_call():
                 "total_eligible": len(eligible),
                 "parallel_calls": parallel_calls,
                 "interval_seconds": interval_seconds,
-                "estimated_duration_minutes": int((len(eligible) / parallel_calls) * (interval_seconds / 60))
+                "estimated_duration_minutes": estimated_minutes,
+                "total_batches": total_batches
             }), 200
         
         # Legacy synchronous mode (not recommended for bulk, kept for compatibility)

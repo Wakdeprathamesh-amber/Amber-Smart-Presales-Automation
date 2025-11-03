@@ -32,28 +32,30 @@ class BatchCallJob:
         self.completed_at = None
         self.next_batch_at = None
         self.current_batch_leads = []
+        self._lock = threading.Lock()  # Protect state updates
         
     def to_dict(self) -> Dict:
-        """Convert job to dictionary for API response."""
-        total_batches = (self.total_leads + self.parallel_calls - 1) // self.parallel_calls
-        progress_percent = int((self.calls_initiated / self.total_leads) * 100) if self.total_leads > 0 else 0
-        
-        return {
-            "job_id": self.job_id,
-            "status": self.status,
-            "total_leads": self.total_leads,
-            "current_batch": self.current_batch,
-            "total_batches": total_batches,
-            "calls_initiated": self.calls_initiated,
-            "calls_successful": self.calls_successful,
-            "calls_failed": self.calls_failed,
-            "progress_percent": progress_percent,
-            "started_at": self.started_at,
-            "completed_at": self.completed_at,
-            "next_batch_at": self.next_batch_at,
-            "current_batch_leads": self.current_batch_leads,
-            "errors": self.errors[-10:]  # Last 10 errors only
-        }
+        """Convert job to dictionary for API response (thread-safe)."""
+        with self._lock:
+            total_batches = (self.total_leads + self.parallel_calls - 1) // self.parallel_calls
+            progress_percent = int((self.calls_initiated / self.total_leads) * 100) if self.total_leads > 0 else 0
+            
+            return {
+                "job_id": self.job_id,
+                "status": self.status,
+                "total_leads": self.total_leads,
+                "current_batch": self.current_batch,
+                "total_batches": total_batches,
+                "calls_initiated": self.calls_initiated,
+                "calls_successful": self.calls_successful,
+                "calls_failed": self.calls_failed,
+                "progress_percent": progress_percent,
+                "started_at": self.started_at,
+                "completed_at": self.completed_at,
+                "next_batch_at": self.next_batch_at,
+                "current_batch_leads": list(self.current_batch_leads),  # Copy list
+                "errors": self.errors[-10:] if self.errors else []  # Copy last 10 errors
+            }
 
 
 class BatchCallWorker:
@@ -99,13 +101,20 @@ class BatchCallWorker:
         Returns:
             BatchCallJob: The created job instance
         """
+        old_job = None
         with self._lock:
             # Cancel existing job if any
             if self.active_job_id and self.active_job_id in self.jobs:
                 old_job = self.jobs[self.active_job_id]
+        
+        # Cancel old job outside worker lock but with job lock
+        if old_job:
+            with old_job._lock:
                 if old_job.status == "running":
                     old_job.status = "cancelled"
                     logger.info(f"Cancelled previous job {self.active_job_id}")
+        
+        with self._lock:
             
             # Create new job
             job = BatchCallJob(job_id, len(leads), parallel_calls, interval_seconds)
@@ -141,11 +150,35 @@ class BatchCallWorker:
         """Cancel a running job."""
         with self._lock:
             job = self.jobs.get(job_id)
-            if job and job.status == "running":
-                job.status = "cancelled"
-                logger.info(f"Cancelled job {job_id}")
-                return True
+        
+        if job:
+            with job._lock:
+                if job.status == "running":
+                    job.status = "cancelled"
+                    logger.info(f"Cancelled job {job_id}")
+                    return True
         return False
+    
+    def _update_sheet_with_retry(self, sheets_manager, row_index: int, fields: dict):
+        """
+        Update sheet with exponential backoff retry logic.
+        Handles transient errors and rate limits.
+        """
+        max_attempts = 3
+        backoff = 1
+        attempt = 0
+        while True:
+            try:
+                sheets_manager.update_lead_fields(row_index, fields)
+                return
+            except Exception as e:
+                attempt += 1
+                if attempt >= max_attempts:
+                    logger.error(f"Sheet update failed after {attempt} attempts: {e}")
+                    raise
+                sleep_time = backoff * (2 ** (attempt - 1))
+                logger.warning(f"Sheet update transient error (attempt {attempt}/{max_attempts}): {e}. Retrying in {sleep_time}s")
+                time.sleep(sleep_time)
     
     def _worker(
         self,
@@ -167,21 +200,26 @@ class BatchCallWorker:
             # Process leads in batches
             for i in range(0, len(leads), job.parallel_calls):
                 # Check if job was cancelled
-                if job.status == "cancelled":
+                with job._lock:
+                    is_cancelled = job.status == "cancelled"
+                if is_cancelled:
                     logger.info(f"Job {job.job_id} cancelled by user")
                     break
                 
                 # Get next batch
                 batch = leads[i:i + job.parallel_calls]
-                job.current_batch = (i // job.parallel_calls) + 1
-                job.current_batch_leads = [item.get('lead', {}).get('name', 'Unknown') for item in batch]
+                with job._lock:
+                    job.current_batch = (i // job.parallel_calls) + 1
+                    job.current_batch_leads = [item.get('lead', {}).get('name', 'Unknown') for item in batch]
                 
                 logger.info(f"Job {job.job_id}: Processing batch {job.current_batch}, "
                            f"leads {i+1}-{min(i+len(batch), len(leads))}")
                 
                 # Process each lead in the batch
                 for lead_data in batch:
-                    if job.status == "cancelled":
+                    with job._lock:
+                        is_cancelled = job.status == "cancelled"
+                    if is_cancelled:
                         break
                     
                     try:
@@ -191,11 +229,12 @@ class BatchCallWorker:
                         number = lead.get('number')
                         
                         if not lead_uuid or not number:
-                            job.calls_failed += 1
-                            job.errors.append({
-                                "lead_uuid": lead_uuid or "unknown",
-                                "error": "Missing UUID or number"
-                            })
+                            with job._lock:
+                                job.calls_failed += 1
+                                job.errors.append({
+                                    "lead_uuid": lead_uuid or "unknown",
+                                    "error": "Missing UUID or number"
+                                })
                             continue
                         
                         # Initiate call via Vapi
@@ -214,58 +253,81 @@ class BatchCallWorker:
                         
                         # Check result
                         if "error" in result:
-                            job.calls_failed += 1
-                            job.errors.append({
-                                "lead_uuid": lead_uuid,
-                                "error": result["error"]
-                            })
+                            with job._lock:
+                                job.calls_failed += 1
+                                job.errors.append({
+                                    "lead_uuid": lead_uuid,
+                                    "error": result["error"]
+                                })
                             logger.warning(f"Call failed for {lead_uuid}: {result['error']}")
                         else:
                             # Get current retry count and increment
                             current_retry_count = int(lead.get('retry_count', 0) or 0)
                             
                             # Update sheet with call initiated status and incremented retry count
-                            sheets_manager.update_lead_fields(row_index_0, {
-                                "call_status": "initiated",
-                                "last_call_time": call_time,
-                                "vapi_call_id": result.get('id', ''),
-                                "retry_count": str(current_retry_count + 1)
-                            })
-                            
-                            job.calls_successful += 1
-                            logger.info(f"Call initiated for {lead_uuid}: {result.get('id')}")
+                            # Use retry logic to handle transient errors
+                            try:
+                                self._update_sheet_with_retry(
+                                    sheets_manager,
+                                    row_index_0,
+                                    {
+                                        "call_status": "initiated",
+                                        "last_call_time": call_time,
+                                        "vapi_call_id": result.get('id', ''),
+                                        "retry_count": str(current_retry_count + 1)
+                                    }
+                                )
+                                with job._lock:
+                                    job.calls_successful += 1
+                                logger.info(f"Call initiated for {lead_uuid}: {result.get('id')}")
+                            except Exception as sheet_error:
+                                # If sheet update fails after retries, log but don't fail the call
+                                logger.error(f"Sheet update failed for {lead_uuid} after retries: {sheet_error}")
+                                with job._lock:
+                                    job.calls_successful += 1  # Call still succeeded
+                                    job.errors.append({
+                                        "lead_uuid": lead_uuid,
+                                        "error": f"Sheet update failed: {str(sheet_error)}"
+                                    })
                         
-                        job.calls_initiated += 1
+                        with job._lock:
+                            job.calls_initiated += 1
                         
                     except Exception as e:
-                        job.calls_failed += 1
-                        job.errors.append({
-                            "lead_uuid": lead.get('lead_uuid', 'unknown'),
-                            "error": str(e)
-                        })
+                        with job._lock:
+                            job.calls_failed += 1
+                            job.errors.append({
+                                "lead_uuid": lead.get('lead_uuid', 'unknown'),
+                                "error": str(e)
+                            })
                         logger.error(f"Error processing lead: {e}", exc_info=True)
                 
                 # Wait before next batch (unless this is the last batch)
-                if i + job.parallel_calls < len(leads) and job.status != "cancelled":
-                    job.next_batch_at = get_ist_now()
-                    # Add interval seconds to current time
+                with job._lock:
+                    is_cancelled = job.status == "cancelled"
+                if i + job.parallel_calls < len(leads) and not is_cancelled:
                     from datetime import timedelta
-                    next_time = job.next_batch_at + timedelta(seconds=job.interval_seconds)
-                    job.next_batch_at = next_time.isoformat()
+                    next_time = get_ist_now() + timedelta(seconds=job.interval_seconds)
+                    with job._lock:
+                        job.next_batch_at = next_time.isoformat()
                     
                     logger.info(f"Job {job.job_id}: Waiting {job.interval_seconds}s before next batch")
                     time.sleep(job.interval_seconds)
             
             # Mark job as completed
-            if job.status != "cancelled":
-                job.status = "completed"
-                job.completed_at = get_ist_timestamp()
+            with job._lock:
+                is_cancelled = job.status == "cancelled"
+            if not is_cancelled:
+                with job._lock:
+                    job.status = "completed"
+                    job.completed_at = get_ist_timestamp()
                 logger.info(f"Job {job.job_id} completed: {job.calls_successful} successful, "
                            f"{job.calls_failed} failed out of {job.total_leads} total")
             
         except Exception as e:
-            job.status = "failed"
-            job.completed_at = get_ist_timestamp()
+            with job._lock:
+                job.status = "failed"
+                job.completed_at = get_ist_timestamp()
             logger.error(f"Job {job.job_id} failed with error: {e}", exc_info=True)
         
         finally:
