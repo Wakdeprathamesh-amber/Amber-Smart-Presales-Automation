@@ -330,42 +330,44 @@ def add_lead():
             return jsonify({
                 "error": "Invalid phone number format. Use format: +919876543210 or 91 9876543210 or 919876543210"
             }), 400
+        
+        # Column order must match init_sheet.py headers
+        partner = (lead_data.get('partner') or '').strip()
         new_lead = [
-            lead_uuid,                          # lead_uuid
-            number_e164,                            # number (E.164)
-            whatsapp_e164,                          # whatsapp_number (E.164)
-            lead_data.get('name', ''),             # name
-            lead_data.get('email', ''),            # email
-            'pending',                             # call_status
-            '0',                                   # retry_count
-            '',                                    # next_retry_time
-            'false',                               # whatsapp_sent
-            'false',                               # email_sent
-            '',                                    # summary
-            '',                                    # success_status
-            '',                                    # structured_data
-            '',                                    # last_call_time
-            '',                                    # vapi_call_id
-            ''                                     # last_analysis_at
+            lead_uuid,           # lead_uuid
+            number_e164,         # number
+            whatsapp_e164,       # whatsapp_number
+            lead_data.get('name', ''),  # name
+            lead_data.get('email', ''), # email
+            partner,             # partner
+            'pending',           # call_status
+            '0',                 # retry_count
+            '',                  # next_retry_time
+            'false',             # whatsapp_sent
+            'false',             # email_sent
+            '',                  # vapi_call_id
+            '',                  # last_call_time
+            '',                  # call_duration
+            '',                  # recording_url
+            '',                  # last_ended_reason
+            '',                  # callback_requested
+            '',                  # callback_time
+            '',                  # summary
+            '',                  # success_status
+            '',                  # structured_data
+            '',                  # analysis_received_at
+            '',                  # country
+            '',                  # university
+            '',                  # course
+            '',                  # intake
+            '',                  # visa_status
+            '',                  # budget
+            '',                  # housing_type
+            ''                   # transcript
         ]
         
         # Add the new lead
         worksheet.append_row(new_lead)
-        # Optional partner field
-        try:
-            partner = (lead_data.get('partner') or '').strip()
-            if partner:
-                headers = worksheet.row_values(1)
-                if 'partner' not in headers:
-                    worksheet.update_cell(1, len(headers) + 1, 'partner')
-                    headers.append('partner')
-                partner_col = headers.index('partner') + 1
-                # Find the newly appended row and write partner
-                new_row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
-                if new_row_index_0 is not None:
-                    worksheet.update_cell(new_row_index_0 + 2, partner_col, partner)
-        except Exception:
-            pass
         
         # Invalidate cache to show new lead immediately
         _invalidate_leads_cache()
@@ -703,23 +705,43 @@ def bulk_upload_leads():
                 number_e164 = number
                 whatsapp_e164 = whatsapp_number if whatsapp_number else number_e164
                 lead_uuid = str(uuid.uuid4())
+                # Column order must match init_sheet.py headers:
+                # lead_uuid, number, whatsapp_number, name, email, partner,
+                # call_status, retry_count, next_retry_time, whatsapp_sent, email_sent,
+                # vapi_call_id, last_call_time, call_duration, recording_url, last_ended_reason,
+                # callback_requested, callback_time, summary, success_status, structured_data,
+                # analysis_received_at, country, university, course, intake, visa_status, budget, housing_type, transcript
                 new_lead = [
-                    lead_uuid,
-                    number_e164,
-                    whatsapp_e164,
-                    name,
-                    email,
-                    'pending',
-                    '0',
-                    '',
-                    'false',
-                    'false',
-                    '',
-                    '',
-                    '',
-                    '',
-                    '',
-                    ''
+                    lead_uuid,           # lead_uuid
+                    number_e164,         # number
+                    whatsapp_e164,       # whatsapp_number
+                    name,                # name
+                    email,               # email
+                    partner,             # partner
+                    'pending',           # call_status
+                    '0',                 # retry_count
+                    '',                  # next_retry_time
+                    'false',             # whatsapp_sent
+                    'false',             # email_sent
+                    '',                  # vapi_call_id
+                    '',                  # last_call_time
+                    '',                  # call_duration
+                    '',                  # recording_url
+                    '',                  # last_ended_reason
+                    '',                  # callback_requested
+                    '',                  # callback_time
+                    '',                  # summary
+                    '',                  # success_status
+                    '',                  # structured_data
+                    '',                  # analysis_received_at
+                    '',                  # country
+                    '',                  # university
+                    '',                  # course
+                    '',                  # intake
+                    '',                  # visa_status
+                    '',                  # budget
+                    '',                  # housing_type
+                    ''                   # transcript
                 ]
                 batch_rows.append(new_lead)
                 # Flush in batches to reduce rate limits
@@ -727,17 +749,6 @@ def bulk_upload_leads():
                     worksheet.append_rows(batch_rows, value_input_option='RAW')
                     created += len(batch_rows)
                     batch_rows = []
-                # Write partner if provided
-                if partner:
-                    headers = worksheet.row_values(1)
-                    if 'partner' not in headers:
-                        worksheet.update_cell(1, len(headers) + 1, 'partner')
-                        headers.append('partner')
-                    partner_col = headers.index('partner') + 1
-                    # Find row just appended
-                    row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
-                    if row_index_0 is not None:
-                        worksheet.update_cell(row_index_0 + 2, partner_col, partner)
                 
             except Exception as e:
                 errors.append({"row": idx + 2, "error": str(e)})
