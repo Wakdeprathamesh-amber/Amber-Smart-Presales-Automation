@@ -293,6 +293,10 @@ class BatchCallWorker:
                         with job._lock:
                             job.calls_initiated += 1
                         
+                        # Small delay between calls to avoid overwhelming Vapi/carrier
+                        # This prevents SIP 403/480 errors that occur with rapid concurrent calls
+                        time.sleep(1)
+                        
                     except Exception as e:
                         with job._lock:
                             job.calls_failed += 1
