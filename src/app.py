@@ -759,12 +759,24 @@ def bulk_upload_leads():
 
 @app.route('/api/leads/bulk-call', methods=['POST'])
 def bulk_call():
-    """Initiate calls for multiple leads. Body: { lead_uuids?: [...], status?: [pending,missed,failed], limit?: n }"""
+    """
+    Initiate batch calling with automatic pacing.
+    
+    Body: { 
+        lead_uuids?: [...],  # Optional: specific leads to call
+        status?: [pending,missed,failed],  # Filter by status
+        use_batch_worker?: true,  # Use batch worker (default: true)
+        parallel_calls?: 5,  # Calls per batch (default: 5)
+        interval_seconds?: 240  # Wait between batches in seconds (default: 240 = 4 min)
+    }
+    """
     try:
         data = request.get_json(silent=True) or {}
         lead_uuids = data.get('lead_uuids') or []
         status_filter = set(data.get('status') or ['pending', 'missed', 'failed'])
-        limit = int(data.get('limit') or 50)
+        use_batch_worker = data.get('use_batch_worker', True)
+        parallel_calls = int(data.get('parallel_calls', 5))
+        interval_seconds = int(data.get('interval_seconds', 240))
 
         worksheet = get_sheets_manager().sheet.worksheet("Leads")
         leads = worksheet.get_all_records()
@@ -775,51 +787,145 @@ def bulk_call():
             uuid_set = set(lead_uuids)
             for i, lead in enumerate(leads):
                 if lead.get('lead_uuid') in uuid_set and lead.get('call_status') in status_filter:
-                    eligible.append((i, lead))
+                    eligible.append({"row_index_0": i, "lead": lead})
         else:
             for i, lead in enumerate(leads):
                 if lead.get('call_status') in status_filter:
-                    eligible.append((i, lead))
+                    eligible.append({"row_index_0": i, "lead": lead})
 
-        initiated = []
-        errors = []
-        assistant_id = os.getenv('VAPI_ASSISTANT_ID')
-        phone_number_id = os.getenv('VAPI_PHONE_NUMBER_ID')
+        if not eligible:
+            return jsonify({"success": True, "message": "No eligible leads found", "total_eligible": 0}), 200
 
-        for i, (row_index_0, lead) in enumerate(eligible[:limit]):
-            try:
-                lead_uuid = lead.get('lead_uuid')
-                number = lead.get('number')
-                if not lead_uuid or not number:
-                    errors.append({"lead_uuid": lead_uuid or '?', "error": "Missing uuid or number"})
-                    continue
-                call_time = get_ist_timestamp()
-                result = get_vapi_client().initiate_outbound_call(
-                    lead_data={"lead_uuid": lead_uuid, "number": number, "name": lead.get('name'), "email": lead.get('email')},
-                    assistant_id=assistant_id,
-                    phone_number_id=phone_number_id
-                )
-                if "error" in result:
-                    errors.append({"lead_uuid": lead_uuid, "error": result["error"]})
-                    continue
-                # update status and vapi id
-                get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
+        # Use batch worker for automatic pacing (recommended for 10+ leads)
+        if use_batch_worker:
+            from src.batch_caller import get_batch_worker
+            import uuid as uuid_lib
+            
+            job_id = str(uuid_lib.uuid4())
+            assistant_id = os.getenv('VAPI_ASSISTANT_ID')
+            phone_number_id = os.getenv('VAPI_PHONE_NUMBER_ID')
+            
+            if not assistant_id or not phone_number_id:
+                return jsonify({"error": "Vapi configuration missing (VAPI_ASSISTANT_ID, VAPI_PHONE_NUMBER_ID)"}), 500
+            
+            worker = get_batch_worker()
+            job = worker.start_job(
+                job_id=job_id,
+                leads=eligible,
+                vapi_client=get_vapi_client(),
+                sheets_manager=get_sheets_manager(),
+                assistant_id=assistant_id,
+                phone_number_id=phone_number_id,
+                parallel_calls=parallel_calls,
+                interval_seconds=interval_seconds
+            )
+            
+            # Invalidate cache to force refresh
+            _invalidate_leads_cache()
+            
+            return jsonify({
+                "success": True,
+                "batch_mode": True,
+                "job_id": job_id,
+                "total_eligible": len(eligible),
+                "parallel_calls": parallel_calls,
+                "interval_seconds": interval_seconds,
+                "estimated_duration_minutes": int((len(eligible) / parallel_calls) * (interval_seconds / 60))
+            }), 200
+        
+        # Legacy synchronous mode (not recommended for bulk, kept for compatibility)
+        else:
+            initiated = []
+            errors = []
+            assistant_id = os.getenv('VAPI_ASSISTANT_ID')
+            phone_number_id = os.getenv('VAPI_PHONE_NUMBER_ID')
+
+            for item in eligible[:25]:  # Limit to 25 for sync mode
                 try:
-                    vapi_call_id = result.get('id')
-                    if vapi_call_id:
-                        headers = worksheet.row_values(1)
-                        if 'vapi_call_id' in headers:
-                            col = headers.index('vapi_call_id') + 1
-                            worksheet.update_cell(row_index_0 + 2, col, vapi_call_id)
-                except Exception:
-                    pass
-                initiated.append({"lead_uuid": lead_uuid, "call_id": result.get('id'), "call_time": call_time})
-            except Exception as e:
-                errors.append({"lead_uuid": lead.get('lead_uuid') or '?', "error": str(e)})
+                    row_index_0 = item['row_index_0']
+                    lead = item['lead']
+                    lead_uuid = lead.get('lead_uuid')
+                    number = lead.get('number')
+                    if not lead_uuid or not number:
+                        errors.append({"lead_uuid": lead_uuid or '?', "error": "Missing uuid or number"})
+                        continue
+                    call_time = get_ist_timestamp()
+                    result = get_vapi_client().initiate_outbound_call(
+                        lead_data={"lead_uuid": lead_uuid, "number": number, "name": lead.get('name'), "email": lead.get('email')},
+                        assistant_id=assistant_id,
+                        phone_number_id=phone_number_id
+                    )
+                    if "error" in result:
+                        errors.append({"lead_uuid": lead_uuid, "error": result["error"]})
+                        continue
+                    get_sheets_manager().update_lead_call_initiated(row_index_0, "initiated", call_time)
+                    try:
+                        vapi_call_id = result.get('id')
+                        if vapi_call_id:
+                            headers = worksheet.row_values(1)
+                            if 'vapi_call_id' in headers:
+                                col = headers.index('vapi_call_id') + 1
+                                worksheet.update_cell(row_index_0 + 2, col, vapi_call_id)
+                    except Exception:
+                        pass
+                    initiated.append({"lead_uuid": lead_uuid, "call_id": result.get('id'), "call_time": call_time})
+                except Exception as e:
+                    errors.append({"lead_uuid": lead.get('lead_uuid') or '?', "error": str(e)})
 
-        return jsonify({"success": True, "initiated": initiated, "errors": errors, "requested": len(eligible[:limit])}), 200
+            _invalidate_leads_cache()
+            return jsonify({"success": True, "batch_mode": False, "initiated": initiated, "errors": errors, "requested": len(eligible[:25])}), 200
+            
     except Exception as e:
         logger.error(f"Error in bulk call: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/batch-call/status', methods=['GET'])
+def get_batch_call_status():
+    """Get status of active or specific batch calling job."""
+    try:
+        from src.batch_caller import get_batch_worker
+        
+        job_id = request.args.get('job_id')
+        worker = get_batch_worker()
+        
+        if job_id:
+            job = worker.get_job(job_id)
+        else:
+            job = worker.get_active_job()
+        
+        if not job:
+            return jsonify({"status": "no_active_job"}), 404
+        
+        return jsonify(job.to_dict()), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting batch call status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/batch-call/cancel', methods=['POST'])
+def cancel_batch_call():
+    """Cancel an active batch calling job."""
+    try:
+        from src.batch_caller import get_batch_worker
+        
+        data = request.get_json(silent=True) or {}
+        job_id = data.get('job_id')
+        
+        if not job_id:
+            return jsonify({"error": "job_id is required"}), 400
+        
+        worker = get_batch_worker()
+        cancelled = worker.cancel_job(job_id)
+        
+        if cancelled:
+            return jsonify({"success": True, "message": f"Job {job_id} cancelled"}), 200
+        else:
+            return jsonify({"error": "Job not found or already completed"}), 404
+            
+    except Exception as e:
+        logger.error(f"Error cancelling batch call: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 # Email settings endpoints
