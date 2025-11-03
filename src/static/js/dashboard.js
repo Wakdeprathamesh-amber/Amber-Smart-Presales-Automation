@@ -38,9 +38,37 @@ document.addEventListener('DOMContentLoaded', () => {
   // Fetch retry configuration
   fetchRetryConfig();
   
+  // Check for active batch job and resume progress tracking
+  checkAndResumeActiveBatchJob();
+  
   // Set up event listeners
   setupEventListeners();
 });
+
+// Check for active batch job on page load
+async function checkAndResumeActiveBatchJob() {
+  try {
+    const resp = await fetch('/api/batch-call/status');
+    if (resp.status === 404) {
+      // No active job, that's fine
+      return;
+    }
+    if (!resp.ok) return;
+    
+    const job = await resp.json();
+    
+    // If job is still running, resume progress tracking
+    if (job.status === 'running') {
+      state.batchJobId = job.job_id;
+      showBatchProgress();
+      startBatchProgressPolling();
+      showMessage('info', 'Resumed tracking active batch job');
+    }
+  } catch (e) {
+    // Silently ignore if no active job
+    console.log('No active batch job to resume');
+  }
+}
 
 function setupEventListeners() {
   // Status filter change
@@ -1262,7 +1290,7 @@ function renderLeadsTable() {
   if (state.filteredLeads.length === 0) {
     tableBody.innerHTML = `
       <tr>
-        <td colspan="9" class="text-center">No leads found</td>
+        <td colspan="10" class="text-center">No leads found</td>
       </tr>
     `;
     return;
