@@ -180,6 +180,93 @@ class BatchCallWorker:
                 logger.warning(f"Sheet update transient error (attempt {attempt}/{max_attempts}): {e}. Retrying in {sleep_time}s")
                 time.sleep(sleep_time)
     
+    def _call_single_lead(self, job, lead_data, vapi_client, sheets_manager, assistant_id, phone_number_id):
+        """
+        Execute a single call in a separate thread (parallel execution).
+        This matches the proven threading pattern from scheduled calls.
+        """
+        try:
+            row_index_0 = lead_data.get('row_index_0')
+            lead = lead_data.get('lead')
+            lead_uuid = lead.get('lead_uuid')
+            number = lead.get('number')
+            
+            if not lead_uuid or not number:
+                with job._lock:
+                    job.calls_failed += 1
+                    job.calls_initiated += 1
+                    job.errors.append({
+                        "lead_uuid": lead_uuid or "unknown",
+                        "error": "Missing UUID or number"
+                    })
+                return
+            
+            # Initiate call via Vapi
+            call_time = get_ist_timestamp()
+            result = vapi_client.initiate_outbound_call(
+                lead_data={
+                    "lead_uuid": lead_uuid,
+                    "number": number,
+                    "name": lead.get('name'),
+                    "email": lead.get('email'),
+                    "partner": lead.get('partner')
+                },
+                assistant_id=assistant_id,
+                phone_number_id=phone_number_id
+            )
+            
+            # Check result
+            if "error" in result:
+                with job._lock:
+                    job.calls_failed += 1
+                    job.calls_initiated += 1
+                    job.errors.append({
+                        "lead_uuid": lead_uuid,
+                        "error": result["error"]
+                    })
+                logger.warning(f"Call failed for {lead_uuid}: {result['error']}")
+            else:
+                # Get current retry count and increment
+                current_retry_count = int(lead.get('retry_count', 0) or 0)
+                
+                # Update sheet with call initiated status and incremented retry count
+                # Use retry logic to handle transient errors
+                try:
+                    self._update_sheet_with_retry(
+                        sheets_manager,
+                        row_index_0,
+                        {
+                            "call_status": "initiated",
+                            "last_call_time": call_time,
+                            "vapi_call_id": result.get('id', ''),
+                            "retry_count": str(current_retry_count + 1)
+                        }
+                    )
+                    with job._lock:
+                        job.calls_successful += 1
+                        job.calls_initiated += 1
+                    logger.info(f"Call initiated for {lead_uuid}: {result.get('id')}")
+                except Exception as sheet_error:
+                    # If sheet update fails after retries, log but don't fail the call
+                    logger.error(f"Sheet update failed for {lead_uuid} after retries: {sheet_error}")
+                    with job._lock:
+                        job.calls_successful += 1  # Call still succeeded
+                        job.calls_initiated += 1
+                        job.errors.append({
+                            "lead_uuid": lead_uuid,
+                            "error": f"Sheet update failed: {str(sheet_error)}"
+                        })
+        
+        except Exception as e:
+            with job._lock:
+                job.calls_failed += 1
+                job.calls_initiated += 1
+                job.errors.append({
+                    "lead_uuid": lead.get('lead_uuid', 'unknown'),
+                    "error": str(e)
+                })
+            logger.error(f"Error processing lead: {e}", exc_info=True)
+    
     def _worker(
         self,
         job: BatchCallJob,
@@ -215,96 +302,29 @@ class BatchCallWorker:
                 logger.info(f"Job {job.job_id}: Processing batch {job.current_batch}, "
                            f"leads {i+1}-{min(i+len(batch), len(leads))}")
                 
-                # Process each lead in the batch
+                # Process each lead in the batch using threading (like scheduled calls)
+                # This approach is proven to work reliably without SIP errors
+                threads = []
                 for lead_data in batch:
                     with job._lock:
                         is_cancelled = job.status == "cancelled"
                     if is_cancelled:
                         break
                     
-                    try:
-                        row_index_0 = lead_data.get('row_index_0')
-                        lead = lead_data.get('lead')
-                        lead_uuid = lead.get('lead_uuid')
-                        number = lead.get('number')
-                        
-                        if not lead_uuid or not number:
-                            with job._lock:
-                                job.calls_failed += 1
-                                job.errors.append({
-                                    "lead_uuid": lead_uuid or "unknown",
-                                    "error": "Missing UUID or number"
-                                })
-                            continue
-                        
-                        # Initiate call via Vapi
-                        call_time = get_ist_timestamp()
-                        result = vapi_client.initiate_outbound_call(
-                            lead_data={
-                                "lead_uuid": lead_uuid,
-                                "number": number,
-                                "name": lead.get('name'),
-                                "email": lead.get('email'),
-                                "partner": lead.get('partner')
-                            },
-                            assistant_id=assistant_id,
-                            phone_number_id=phone_number_id
-                        )
-                        
-                        # Check result
-                        if "error" in result:
-                            with job._lock:
-                                job.calls_failed += 1
-                                job.errors.append({
-                                    "lead_uuid": lead_uuid,
-                                    "error": result["error"]
-                                })
-                            logger.warning(f"Call failed for {lead_uuid}: {result['error']}")
-                        else:
-                            # Get current retry count and increment
-                            current_retry_count = int(lead.get('retry_count', 0) or 0)
-                            
-                            # Update sheet with call initiated status and incremented retry count
-                            # Use retry logic to handle transient errors
-                            try:
-                                self._update_sheet_with_retry(
-                                    sheets_manager,
-                                    row_index_0,
-                                    {
-                                        "call_status": "initiated",
-                                        "last_call_time": call_time,
-                                        "vapi_call_id": result.get('id', ''),
-                                        "retry_count": str(current_retry_count + 1)
-                                    }
-                                )
-                                with job._lock:
-                                    job.calls_successful += 1
-                                logger.info(f"Call initiated for {lead_uuid}: {result.get('id')}")
-                            except Exception as sheet_error:
-                                # If sheet update fails after retries, log but don't fail the call
-                                logger.error(f"Sheet update failed for {lead_uuid} after retries: {sheet_error}")
-                                with job._lock:
-                                    job.calls_successful += 1  # Call still succeeded
-                                    job.errors.append({
-                                        "lead_uuid": lead_uuid,
-                                        "error": f"Sheet update failed: {str(sheet_error)}"
-                                    })
-                        
-                        with job._lock:
-                            job.calls_initiated += 1
-                        
-                        # Small delay between calls to avoid overwhelming Vapi/carrier
-                        # This prevents SIP 403/480 errors that occur with rapid concurrent calls
-                        time.sleep(1)
-                        
-                    except Exception as e:
-                        with job._lock:
-                            job.calls_failed += 1
-                            job.errors.append({
-                                "lead_uuid": lead.get('lead_uuid', 'unknown'),
-                                "error": str(e)
-                            })
-                        logger.error(f"Error processing lead: {e}", exc_info=True)
+                    # Start each call in a separate thread for true parallelism
+                    thread = threading.Thread(
+                        target=self._call_single_lead,
+                        args=(job, lead_data, vapi_client, sheets_manager, assistant_id, phone_number_id)
+                    )
+                    thread.daemon = True
+                    thread.start()
+                    threads.append(thread)
+                
+                # Wait for all threads in this batch to complete (with timeout)
+                for thread in threads:
+                    thread.join(timeout=30)  # 30 second timeout per call initiation
+                
+                logger.info(f"✅ Job {job.job_id}: Batch {job.current_batch} complete")
                 
                 # Wait before next batch (unless this is the last batch)
                 with job._lock:
