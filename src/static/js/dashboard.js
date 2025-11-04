@@ -26,8 +26,8 @@ const state = {
     max_retries: 3,
     retry_intervals: [1, 4, 24]
   },
-  currentLeadUuid: null,
-  batchJobId: null  // Track active batch calling job
+  currentLeadUuid: null
+  // REMOVED: batchJobId - bulk calling disabled
 };
 
 // DOM Elements
@@ -38,37 +38,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Fetch retry configuration
   fetchRetryConfig();
   
-  // Check for active batch job and resume progress tracking
-  checkAndResumeActiveBatchJob();
+  // REMOVED: checkAndResumeActiveBatchJob() - bulk calling disabled
   
   // Set up event listeners
   setupEventListeners();
 });
 
-// Check for active batch job on page load
-async function checkAndResumeActiveBatchJob() {
-  try {
-    const resp = await fetch('/api/batch-call/status');
-    if (resp.status === 404) {
-      // No active job, that's fine
-      return;
-    }
-    if (!resp.ok) return;
-    
-    const job = await resp.json();
-    
-    // If job is still running, resume progress tracking
-    if (job.status === 'running') {
-      state.batchJobId = job.job_id;
-      showBatchProgress();
-      startBatchProgressPolling();
-      showMessage('info', 'Resumed tracking active batch job');
-    }
-  } catch (e) {
-    // Silently ignore if no active job
-    console.log('No active batch job to resume');
-  }
-}
+// REMOVED: checkAndResumeActiveBatchJob - bulk calling functionality disabled
 
 function setupEventListeners() {
   // Status filter change
@@ -119,11 +95,7 @@ function setupEventListeners() {
     uploadCsvBtn.addEventListener('click', () => openModal('upload-csv-modal'));
   }
 
-  // Bulk call button
-  const bulkCallBtn = document.getElementById('bulk-call-btn');
-  if (bulkCallBtn) {
-    bulkCallBtn.addEventListener('click', bulkCallEligible);
-  }
+  // REMOVED: Bulk call button - functionality disabled
   
   // Schedule bulk calls button
   const scheduleBulkBtn = document.getElementById('schedule-bulk-btn');
@@ -965,231 +937,9 @@ async function submitCsvUpload() {
   }
 }
 
-async function bulkCallEligible() {
-  showLoader(true);
-  try {
-    const resp = await fetch('/api/leads/bulk-call', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        status: ['pending', 'missed', 'failed'],
-        use_batch_worker: true,
-        parallel_calls: 5,
-        interval_seconds: 240
-      })
-    });
-    if (!resp.ok) throw new Error('Bulk call failed');
-    const data = await resp.json();
-    
-    // Handle batch mode response
-    if (data.batch_mode) {
-      showMessage('success', `Batch calling started! Processing ${data.total_eligible} leads in batches of ${data.parallel_calls}.`);
-      // Store job ID for tracking
-      state.batchJobId = data.job_id;
-      // Show progress indicator
-      showBatchProgress();
-      // Start polling for progress
-      startBatchProgressPolling();
-    } else {
-      // Legacy sync mode
-      showMessage('success', `Initiated ${data.initiated.length} calls${data.errors && data.errors.length ? `, ${data.errors.length} errors` : ''}`);
-    }
-    fetchLeads();
-  } catch (e) {
-    console.error('Bulk call error:', e);
-    showMessage('error', 'Failed to start bulk calls');
-  } finally {
-    showLoader(false);
-  }
-}
-
-// Batch progress tracking
-let batchProgressTimer = null;
-
-function showBatchProgress() {
-  const existingProgress = document.getElementById('batch-progress-container');
-  if (existingProgress) existingProgress.remove();
-  
-  const progressHTML = `
-    <div id="batch-progress-container" class="batch-progress-banner">
-      <div class="batch-progress-content">
-        <div class="batch-progress-header">
-          <h4>📞 Batch Calling in Progress</h4>
-          <button id="batch-cancel-btn" class="btn btn-sm btn-danger">Cancel</button>
-        </div>
-        <div class="batch-progress-bar-container">
-          <div id="batch-progress-bar" class="batch-progress-bar" style="width: 0%"></div>
-        </div>
-        <div class="batch-progress-stats">
-          <span id="batch-progress-text">Initializing...</span>
-        </div>
-        <div class="batch-progress-details">
-          <span id="batch-current-batch">Batch: -/-</span>
-          <span id="batch-calls-made">Calls: 0/0</span>
-          <span id="batch-next-batch">Next batch: calculating...</span>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  const container = document.querySelector('.container');
-  const firstChild = container.firstChild;
-  container.insertBefore(createElementFromHTML(progressHTML), firstChild);
-  
-  // Add cancel handler
-  document.getElementById('batch-cancel-btn').addEventListener('click', cancelBatchCall);
-}
-
-function createElementFromHTML(htmlString) {
-  const div = document.createElement('div');
-  div.innerHTML = htmlString.trim();
-  return div.firstChild;
-}
-
-async function startBatchProgressPolling() {
-  // Clear existing timer
-  if (batchProgressTimer) {
-    clearInterval(batchProgressTimer);
-  }
-  
-  // Poll every 3 seconds
-  batchProgressTimer = setInterval(async () => {
-    try {
-      const resp = await fetch('/api/batch-call/status');
-      if (resp.status === 404) {
-        // No active job
-        stopBatchProgressPolling();
-        return;
-      }
-      if (!resp.ok) throw new Error('Failed to fetch progress');
-      
-      const job = await resp.json();
-      updateBatchProgress(job);
-      
-      // Stop polling if job completed
-      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
-        stopBatchProgressPolling();
-        showBatchComplete(job);
-      }
-    } catch (e) {
-      console.error('Progress polling error:', e);
-    }
-  }, 3000);
-}
-
-function stopBatchProgressPolling() {
-  if (batchProgressTimer) {
-    clearInterval(batchProgressTimer);
-    batchProgressTimer = null;
-  }
-}
-
-function updateBatchProgress(job) {
-  const progressBar = document.getElementById('batch-progress-bar');
-  const progressText = document.getElementById('batch-progress-text');
-  const currentBatch = document.getElementById('batch-current-batch');
-  const callsMade = document.getElementById('batch-calls-made');
-  const nextBatch = document.getElementById('batch-next-batch');
-  
-  if (!progressBar) return;  // Progress UI removed
-  
-  // Update progress bar
-  progressBar.style.width = `${job.progress_percent}%`;
-  
-  // Update text
-  progressText.textContent = `${job.calls_initiated} of ${job.total_leads} calls initiated (${job.progress_percent}%)`;
-  
-  // Update batch info
-  currentBatch.textContent = `Batch: ${job.current_batch}/${job.total_batches}`;
-  callsMade.textContent = `✅ ${job.calls_successful} successful | ❌ ${job.calls_failed} failed`;
-  
-  // Update next batch time
-  if (job.next_batch_at) {
-    const nextTime = new Date(job.next_batch_at);
-    const now = new Date();
-    const secondsUntil = Math.max(0, Math.floor((nextTime - now) / 1000));
-    const minutes = Math.floor(secondsUntil / 60);
-    const seconds = secondsUntil % 60;
-    nextBatch.textContent = `Next batch: in ${minutes}m ${seconds}s`;
-  } else if (job.status === 'running') {
-    nextBatch.textContent = 'Next batch: processing...';
-  } else {
-    nextBatch.textContent = 'Next batch: -';
-  }
-}
-
-function showBatchComplete(job) {
-  const progressContainer = document.getElementById('batch-progress-container');
-  if (!progressContainer) return;
-  
-  // Update UI to show completion
-  const progressContent = progressContainer.querySelector('.batch-progress-content');
-  
-  let statusIcon = '✅';
-  let statusText = 'Completed';
-  let statusClass = 'success';
-  
-  if (job.status === 'cancelled') {
-    statusIcon = '⏸️';
-    statusText = 'Cancelled';
-    statusClass = 'warning';
-  } else if (job.status === 'failed') {
-    statusIcon = '❌';
-    statusText = 'Failed';
-    statusClass = 'error';
-  }
-  
-  progressContent.innerHTML = `
-    <div class="batch-progress-header">
-      <h4>${statusIcon} Batch Calling ${statusText}</h4>
-      <button class="btn btn-sm btn-secondary" onclick="document.getElementById('batch-progress-container').remove()">Close</button>
-    </div>
-    <div class="batch-progress-stats">
-      <p><strong>Total Leads:</strong> ${job.total_leads}</p>
-      <p><strong>Calls Initiated:</strong> ${job.calls_initiated}</p>
-      <p><strong>Successful:</strong> ${job.calls_successful}</p>
-      <p><strong>Failed:</strong> ${job.calls_failed}</p>
-    </div>
-  `;
-  
-  // Show notification
-  showMessage(statusClass, `Batch calling ${statusText.toLowerCase()}: ${job.calls_successful} successful, ${job.calls_failed} failed out of ${job.total_leads} total`);
-  
-  // Refresh leads to show updated statuses
-  fetchLeads();
-  
-  // Auto-close after 10 seconds
-  setTimeout(() => {
-    if (progressContainer && progressContainer.parentNode) {
-      progressContainer.remove();
-    }
-  }, 10000);
-}
-
-async function cancelBatchCall() {
-  if (!state.batchJobId) return;
-  
-  if (!confirm('Cancel batch calling? Calls already initiated will continue, but no new calls will be made.')) {
-    return;
-  }
-  
-  try {
-    const resp = await fetch('/api/batch-call/cancel', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id: state.batchJobId })
-    });
-    
-    if (!resp.ok) throw new Error('Failed to cancel');
-    
-    showMessage('info', 'Batch calling cancelled');
-    stopBatchProgressPolling();
-    
-  } catch (e) {
-    console.error('Cancel error:', e);
-    showMessage('error', 'Failed to cancel batch calling');
-  }
-}
+// REMOVED: All bulk calling functions (bulkCallEligible, showBatchProgress, startBatchProgressPolling, 
+// stopBatchProgressPolling, updateBatchProgress, showBatchComplete, cancelBatchCall)
+// Bulk calling functionality disabled to maintain call quality
 
 async function sendEmail(leadUuid) {
   showLoader(true);
