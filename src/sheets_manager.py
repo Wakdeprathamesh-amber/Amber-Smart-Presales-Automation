@@ -21,6 +21,8 @@ class SheetsManager:
         self.sheet = self._get_sheet()
         # Simple headers cache per worksheet name to reduce header reads
         self._headers_cache = {}
+        # Worksheet object cache to prevent repeated metadata fetches (429 rate limit)
+        self._worksheet_cache = {}
     
     def _authenticate(self):
         """Authenticate with Google Sheets API."""
@@ -40,11 +42,19 @@ class SheetsManager:
         """Get the specific Google Sheet."""
         return self.client.open_by_key(self.sheet_id)
 
+    def _get_worksheet(self, worksheet_name: str):
+        """Return cached worksheet object to prevent repeated metadata fetches (rate limit optimization)."""
+        if worksheet_name in self._worksheet_cache:
+            return self._worksheet_cache[worksheet_name]
+        ws = self.sheet.worksheet(worksheet_name)
+        self._worksheet_cache[worksheet_name] = ws
+        return ws
+    
     def _get_headers(self, worksheet_name: str):
         """Return cached headers for a worksheet, fetching once when missing."""
         if worksheet_name in self._headers_cache and isinstance(self._headers_cache[worksheet_name], list):
             return self._headers_cache[worksheet_name]
-        ws = self.sheet.worksheet(worksheet_name)
+        ws = self._get_worksheet(worksheet_name)
         headers = ws.row_values(1)
         self._headers_cache[worksheet_name] = headers
         return headers
@@ -63,7 +73,7 @@ class SheetsManager:
             list: List of lead dictionaries with their data
         """
         try:
-            worksheet = self.sheet.worksheet("Leads")
+            worksheet = self._get_worksheet("Leads")
             # Check if sheet is empty or has no data rows (cheap range)
             values = worksheet.get_values('A1:A2')
             if len(values) <= 1:  # Only header row or empty
@@ -346,7 +356,7 @@ class SheetsManager:
     # Conversations sheet helpers
     def _get_or_create_conversations_sheet(self):
         try:
-            return self.sheet.worksheet("Conversations")
+            return self._get_worksheet("Conversations")
         except gspread.exceptions.WorksheetNotFound:
             ws = self.sheet.add_worksheet(title="Conversations", rows=1000, cols=12)
             ws.update('A1:L1', [[
@@ -384,7 +394,7 @@ class SheetsManager:
         """
         # Check if Settings worksheet exists, create if not
         try:
-            settings_sheet = self.sheet.worksheet("Settings")
+            settings_sheet = self._get_worksheet("Settings")
         except gspread.exceptions.WorksheetNotFound:
             settings_sheet = self.sheet.add_worksheet(title="Settings", rows=10, cols=5)
             settings_sheet.update('A1:B1', [['Setting', 'Value']])
@@ -405,7 +415,7 @@ class SheetsManager:
             dict: Retry configuration with max_retries and retry_intervals
         """
         try:
-            settings_sheet = self.sheet.worksheet("Settings")
+            settings_sheet = self._get_worksheet("Settings")
             settings_data = settings_sheet.get_all_records()
             
             config = {}
@@ -440,7 +450,7 @@ class SheetsManager:
         """
         if not fields:
             return
-        ws = self.sheet.worksheet("Leads")
+        ws = self._get_worksheet("Leads")
         headers = self._get_headers("Leads")
         sheet_row = row_index + 2
         updates = []
