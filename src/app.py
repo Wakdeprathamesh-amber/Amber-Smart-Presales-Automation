@@ -381,13 +381,16 @@ def add_lead():
 def initiate_call(lead_uuid):
     """Initiate a call to a specific lead."""
     try:
-        # Locate row by lead_uuid
-        worksheet = get_sheets_manager().sheet.worksheet("Leads")
+        # Locate row by lead_uuid (1 read: UUID column only)
         row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
         if row_index_0 is None:
             return jsonify({"error": "Lead not found"}), 404
-        leads = worksheet.get_all_records()
-        lead = leads[row_index_0]
+        
+        # Read only this specific row (1 read: single row only)
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
+        headers = get_sheets_manager()._get_headers("Leads")
+        row_data = worksheet.row_values(row_index_0 + 2)  # +2 for 1-based + header
+        lead = dict(zip(headers, row_data))
         
         # Allow manual call at any status; backend will record initiation time
         
@@ -553,21 +556,16 @@ def get_lead_details(lead_uuid):
         cached = _details_cache.get(lead_uuid)
         if cached and (now - cached.get("ts", 0)) < _CACHE_TTL_SECONDS:
             return jsonify(cached["data"])
-        # Get the worksheet
-        worksheet = get_sheets_manager().sheet.worksheet("Leads")
-        
-        # Check if sheet is empty or has no data rows
-        values = worksheet.get_values()
-        if len(values) <= 1:  # Only header row or empty
-            logger.info("Sheet is empty or has only headers")
-            return jsonify({"error": "No leads found in sheet"}), 404
-            
-        # Get all records
+        # Locate row by lead_uuid (efficient: reads UUID column only)
         row_index_0 = get_sheets_manager().find_row_by_lead_uuid(lead_uuid)
         if row_index_0 is None:
             return jsonify({"error": "Lead not found"}), 404
-        leads = worksheet.get_all_records()
-        lead = leads[row_index_0]
+        
+        # Read only this specific row (efficient: single row read)
+        worksheet = get_sheets_manager().sheet.worksheet("Leads")
+        headers = get_sheets_manager()._get_headers("Leads")
+        row_data = worksheet.row_values(row_index_0 + 2)  # +2 for 1-based + header
+        lead = dict(zip(headers, row_data))
         lead['lead_uuid'] = lead_uuid
         
         # Parse structured data if it exists
